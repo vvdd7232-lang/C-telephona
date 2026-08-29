@@ -33,10 +33,10 @@ QStringList loaderIds()
 QString statusLabel(const GameProfile &p)
 {
     if (p.downloaded)
-        return QStringLiteral("клиент скачан");
+        return QStringLiteral("игра установлена");
     if (!p.downloadError.isEmpty())
         return QStringLiteral("ошибка: %1").arg(p.downloadError);
-    return QStringLiteral("клиент не скачан");
+    return QStringLiteral("игра не установлена");
 }
 
 QColor statusColor(const GameProfile &p)

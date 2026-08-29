@@ -40,8 +40,10 @@ public:
     QString clientDirFor(const GameProfile &p) const;
     QString clientPathFor(const GameProfile &p) const;
 
-private:
+    // Превращает имя профиля в безопасное имя каталога (для папки игры)
     static QString sanitizeName(const QString &name);
+
+private:
 
     QString m_dataDir;
     QVector<GameProfile> m_profiles;

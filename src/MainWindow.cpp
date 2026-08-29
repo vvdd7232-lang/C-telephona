@@ -1,12 +1,13 @@
 #include "MainWindow.h"
 
 #include "AddProfileDialog.h"
-#include "GameDownloader.h"
+#include "MinecraftInstaller.h"
 #include "ProfileStore.h"
 #include "VersionManager.h"
 #include "pixelart.h"
 
 #include <QComboBox>
+#include <QDir>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -113,21 +114,27 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
             onVersionsRefreshFinished();
     };
 
-    // Загрузчик клиента
-    m_downloader = new GameDownloader(this);
-    m_downloader->onProgress = [this](qint64 got, qint64 total) {
-        if (total > 0) {
-            m_progressBar->setRange(0, 100);
-            m_progressBar->setValue(int(got * 100 / total));
-            m_profileStatusLabel->setText(
-                QStringLiteral("скачивание… %1 / %2 МБ")
-                    .arg(got / 1024 / 1024)
-                    .arg(total / 1024 / 1024));
-        }
+    // Установщик и запускатор игры
+    m_installer = new MinecraftInstaller(this);
+    m_installer->onProgress = [this](const InstallProgress &p) {
+        const int percent = p.totalSteps > 0
+            ? qBound(0, p.completedSteps * 100 / p.totalSteps, 100)
+            : 0;
+        m_progressBar->setRange(0, 100);
+        m_progressBar->setValue(percent);
+        m_progressBar->show();
+        QString text = QStringLiteral("%1… %2/%3")
+                           .arg(p.stage)
+                           .arg(p.completedSteps)
+                           .arg(p.totalSteps);
+        if (!p.currentFile.isEmpty())
+            text += QStringLiteral(" · %1").arg(p.currentFile);
+        m_profileStatusLabel->setText(text);
     };
-    m_downloader->onFinished = [this](bool ok, const QString &error) {
+    m_installer->onFinished = [this](bool ok, const QString &error) {
         m_progressBar->hide();
         m_downloadButton->setEnabled(true);
+        m_launchButton->setEnabled(true);
 
         GameProfile profile;
         bool found = false;
@@ -144,16 +151,34 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
         if (ok) {
             profile.downloaded = true;
             profile.downloadError.clear();
-            profile.clientPath = m_store->clientPathFor(profile);
-            showToast(QStringLiteral("Клиент «%1» скачан").arg(profile.name));
+            profile.clientPath = m_installer->clientJar();
+            m_store->updateProfile(profile);
+            refreshProfileList();
+            selectProfile(profile.name);
+
+            if (m_launchAfterInstall) {
+                m_launchAfterInstall = false;
+                launchProfile(profile);
+            } else {
+                showToast(QStringLiteral("Игра «%1» установлена").arg(profile.name));
+            }
         } else {
             profile.downloaded = false;
             profile.downloadError = error;
-            showToast(QStringLiteral("Не удалось скачать: %1").arg(error));
+            m_store->updateProfile(profile);
+            refreshProfileList();
+            selectProfile(profile.name);
+            m_launchAfterInstall = false;
+            showToast(QStringLiteral("Не удалось установить: %1").arg(error));
         }
-        m_store->updateProfile(profile);
-        refreshProfileList();
-        selectProfile(m_selectedProfile);
+    };
+    m_installer->onGameStarted = [this]() {
+        showToast(QStringLiteral("Игра запущена!"));
+        updateMainPanel();
+    };
+    m_installer->onGameFinished = [this](int code) {
+        showToast(QStringLiteral("Игра завершена (код %1)").arg(code));
+        updateMainPanel();
     };
 
     refreshProfileList();
@@ -330,7 +355,7 @@ void MainWindow::buildLaunchPanel()
     connect(m_downloadButton, &QPushButton::clicked, this, [this]() {
         for (const GameProfile &p : m_store->profiles()) {
             if (p.name == m_selectedProfile) {
-                startDownload(p);
+                startDownload(p, false);
                 break;
             }
         }
@@ -451,21 +476,17 @@ void MainWindow::onAddProfileClicked()
     m_hintLabel->setText(QStringLiteral("Профиль «%1» добавлен").arg(profile.name));
 
     if (dialog.downloadNow())
-        startDownload(profile);
+        startDownload(profile, false);
 }
 
-void MainWindow::startDownload(const GameProfile &profile)
+void MainWindow::startDownload(const GameProfile &profile, bool launchAfterInstall)
 {
-    if (m_downloader->isBusy()) {
-        showToast(QStringLiteral("Уже идёт скачивание"));
+    if (m_installer->isBusy()) {
+        showToast(QStringLiteral("Уже идёт установка"));
         return;
     }
 
-    const QString versionJsonUrl = m_versions->versionJsonUrl(profile.versionId);
-    if (versionJsonUrl.isEmpty()) {
-        showToast(QStringLiteral("Версия %1 не найдена в списке").arg(profile.versionId));
-        return;
-    }
+    m_launchAfterInstall = launchAfterInstall;
 
     // сбрасываем статус профиля
     GameProfile reset = profile;
@@ -473,14 +494,22 @@ void MainWindow::startDownload(const GameProfile &profile)
     reset.downloadError.clear();
     m_store->updateProfile(reset);
 
-    m_profileStatusLabel->setText(QStringLiteral("скачивание… 0%"));
+    m_profileStatusLabel->setText(QStringLiteral("подготовка…"));
     m_progressBar->setValue(0);
     m_progressBar->show();
     m_downloadButton->setEnabled(false);
+    m_launchButton->setEnabled(false);
 
-    const QString dest = m_store->clientPathFor(profile);
-    m_downloader->downloadClient(versionJsonUrl, dest);
+    m_installer->install(profile.versionId, profile.loader, m_store->dataDir(),
+                         gameDirFor(profile),
+                         [this](const QString &id) { return m_versions->versionJsonUrl(id); });
     refreshProfileList();
+}
+
+QString MainWindow::gameDirFor(const GameProfile &profile) const
+{
+    return QDir(m_store->dataDir()).filePath(
+        QStringLiteral("games/") + ProfileStore::sanitizeName(profile.name));
 }
 
 // ---------- Список версий ----------
@@ -508,8 +537,8 @@ void MainWindow::onVersionsFailed()
 
 void MainWindow::updateMainPanel()
 {
-    if (!m_store)
-        return; // вызывается из buildLaunchPanel до создания хранилища
+    if (!m_store || !m_installer)
+        return; // вызывается из buildLaunchPanel до создания хранилища/установщика
 
     const bool hasProfile = !m_selectedProfile.isEmpty();
     GameProfile selected;
@@ -534,7 +563,10 @@ void MainWindow::updateMainPanel()
         QStringLiteral("Версия %1 · %2")
             .arg(selected.versionId, loaderDisplayName(selected.loader)));
 
-    if (m_downloader->isBusy()) {
+    const bool busy = m_installer->isBusy();
+    const bool running = m_installer->isGameRunning();
+
+    if (busy) {
         // статус уже показывает прогресс
     } else {
         m_profileStatusLabel->setText(statusLabel(selected));
@@ -543,18 +575,33 @@ void MainWindow::updateMainPanel()
             QStringLiteral("color: %1;").arg(color.name()));
     }
 
-    m_downloadButton->setEnabled(!selected.downloaded && !m_downloader->isBusy());
+    m_downloadButton->setEnabled(!selected.downloaded && !busy && !running);
     m_downloadButton->setText(selected.downloaded
-                                  ? QStringLiteral("\u2713  Клиент скачан")
-                                  : QStringLiteral("\u2b07  Скачать клиент"));
+                                  ? QStringLiteral("\u2713  Игра установлена")
+                                  : QStringLiteral("\u2b07  Скачать игру"));
 
-    m_launchButton->setEnabled(true);
+    m_launchButton->setEnabled(!busy);
+    m_launchButton->setText(running
+                                ? QStringLiteral("\u23f9  Остановить игру")
+                                : QStringLiteral("\u25b6   ЗАПУСТИТЬ"));
 }
 
 // ---------- Действия ----------
 
 void MainWindow::onLaunchClicked()
 {
+    // Игра запущена — кнопка работает как «Остановить»
+    if (m_installer->isGameRunning()) {
+        m_installer->stopGame();
+        showToast(QStringLiteral("Останавливаю игру…"));
+        return;
+    }
+
+    if (m_installer->isBusy()) {
+        showToast(QStringLiteral("Сейчас идёт установка — подождите"));
+        return;
+    }
+
     if (m_selectedProfile.isEmpty()) {
         showToast(QStringLiteral("Сначала создайте профиль"));
         return;
@@ -568,15 +615,49 @@ void MainWindow::onLaunchClicked()
         }
     }
 
-    if (!selected.downloaded) {
-        showToast(QStringLiteral("Сначала скачайте клиент для профиля «%1»").arg(selected.name));
+    if (selected.loader == QLatin1String("forge") || selected.loader == QLatin1String("neoforge")) {
+        showToast(QStringLiteral("Запуск %1 пока не поддерживается — выберите Vanilla, Fabric или Quilt")
+                      .arg(loaderDisplayName(selected.loader)));
         return;
     }
 
-    // TODO: реальный запуск (сборка командной строки Java)
-    showToast(QStringLiteral("Запускаю «%1» (%2 · %3)… скоро!")
-                  .arg(selected.name, selected.versionId,
-                       loaderDisplayName(selected.loader)));
+    if (!selected.downloaded) {
+        // Полная установка и сразу запуск
+        showToast(QStringLiteral("Скачиваю игру «%1» — запущу, как будет готово…").arg(selected.name));
+        startDownload(selected, true);
+        return;
+    }
+
+    launchProfile(selected);
+}
+
+void MainWindow::launchProfile(const GameProfile &profile)
+{
+    if (m_installer->isGameRunning())
+        return;
+
+    const QString dataDir = m_store->dataDir();
+    const QString gameDir = gameDirFor(profile);
+
+    if (MinecraftInstaller::findJava().isEmpty()) {
+        m_profileStatusLabel->setText(QStringLiteral("Java не найдена — скачиваю…"));
+        m_progressBar->setValue(0);
+        m_progressBar->show();
+        m_installer->ensureJava(dataDir, [this, profile, dataDir, gameDir](bool ok, const QString &err) {
+            m_progressBar->hide();
+            if (!ok) {
+                showToast(QStringLiteral("Не удалось получить Java: %1").arg(err));
+                return;
+            }
+            showToast(QStringLiteral("Java готова, запускаю…"));
+            if (!m_installer->launchGame(profile.versionId, dataDir, gameDir))
+                showToast(QStringLiteral("Не удалось запустить игру: не все файлы на месте"));
+        });
+        return;
+    }
+
+    if (!m_installer->launchGame(profile.versionId, dataDir, gameDir))
+        showToast(QStringLiteral("Не удалось запустить игру: не все файлы на месте. Нажмите «Скачать игру»"));
 }
 
 void MainWindow::onSettingsClicked()

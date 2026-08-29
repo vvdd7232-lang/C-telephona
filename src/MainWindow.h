@@ -7,7 +7,7 @@
 #include <functional>
 
 class AddProfileDialog;
-class GameDownloader;
+class MinecraftInstaller;
 class ProfileStore;
 class QLabel;
 class QListWidget;
@@ -18,8 +18,9 @@ class VersionManager;
 
 // Главное окно лаунчера EnderForge.
 // Слева — библиотека профилей (как игры в Steam), справа — детали
-// выбранного профиля и запуск. Профиль = версия + загрузчик; клиент можно
-// скачать сразу или просто сохранить профиль.
+// выбранного профиля и запуск. Профиль = версия + загрузчик; игру можно
+// скачать сразу или просто сохранить профиль, а запуск делает полное
+// скачивание (клиент, библиотеки, ресурсы, natives) и старт Java.
 class MainWindow : public QMainWindow
 {
 public:
@@ -53,8 +54,12 @@ private:
     void refreshProfileList();
     void selectProfile(const QString &name);
     void onAddProfileClicked();
-    void startDownload(const GameProfile &profile);
+    void startDownload(const GameProfile &profile, bool launchAfterInstall);
     void onProfileListClicked();
+
+    // Запуск
+    void launchProfile(const GameProfile &profile);
+    QString gameDirFor(const GameProfile &profile) const;
 
     // Список версий
     void onVersionsLoaded();
@@ -91,8 +96,9 @@ private:
 
     VersionManager *m_versions = nullptr;
     ProfileStore *m_store = nullptr;
-    GameDownloader *m_downloader = nullptr;
+    MinecraftInstaller *m_installer = nullptr;
 
     QString m_selectedProfile;
     bool m_manualRefresh = false;
+    bool m_launchAfterInstall = false;  // запустить игру после установки
 };

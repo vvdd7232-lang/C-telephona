@@ -22,6 +22,8 @@ add_executable(enderforge
     src/ProfileStore.cpp
     src/GameDownloader.h
     src/GameDownloader.cpp
+    src/MinecraftInstaller.h
+    src/MinecraftInstaller.cpp
     src/AddProfileDialog.h
     src/AddProfileDialog.cpp
     src/pixelart.h
