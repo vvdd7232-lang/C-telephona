@@ -5,15 +5,62 @@
 #include "pixelart.h"
 
 #include <QApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QMessageLogContext>
+#include <QNetworkProxy>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
 
 namespace {
+
+// Простой лог-файл: EnderForge.log рядом с exe (или в %TEMP%). Пишет сообщения
+// Qt (qDebug/qWarning/...) и этапы запуска — помогает диагностировать,
+// на каком шаге приложение застревает на машине пользователя.
+QString g_logPath;
+bool g_logInit = false;
+
+void appendLogLine(const QString &text)
+{
+    if (g_logPath.isEmpty())
+        return;
+    QFile f(g_logPath);
+    if (f.open(QIODevice::Append | QIODevice::Text)) {
+        QTextStream ts(&f);
+        ts << QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"))
+           << QLatin1Char(' ') << text << QLatin1Char('\n');
+    }
+}
+
+void logToFile(QtMsgType type, const QMessageLogContext &, const QString &msg)
+{
+    switch (type) {
+    case QtDebugMsg:    appendLogLine(QStringLiteral("[debug] ") + msg); break;
+    case QtInfoMsg:     appendLogLine(QStringLiteral("[info]  ") + msg); break;
+    case QtWarningMsg:  appendLogLine(QStringLiteral("[warn]  ") + msg); break;
+    case QtCriticalMsg: appendLogLine(QStringLiteral("[crit]  ") + msg); break;
+    case QtFatalMsg:    appendLogLine(QStringLiteral("[fatal] ") + msg); break;
+    }
+}
+
+void initLog()
+{
+    if (g_logInit)
+        return;
+    g_logInit = true;
+    g_logPath = QDir::temp().filePath(QStringLiteral("EnderForge.log"));
+    appendLogLine(QStringLiteral("=== EnderForge startup ==="));
+    qInstallMessageHandler(logToFile);
+}
+
+void stage(const QString &s)
+{
+    appendLogLine(QStringLiteral("[stage] ") + s);
+}
 
 // Поиск файла ресурсов: сначала рядом с бинарником, затем в текущей папке,
 // затем в исходниках проекта (задаётся через ENDERFORGE_RESOURCE_DIR).
@@ -45,7 +92,17 @@ QString loadTextFile(const QString &path)
 
 int main(int argc, char *argv[])
 {
+    initLog();
+    stage(QStringLiteral("before QApplication"));
     QApplication app(argc, argv);
+    stage(QStringLiteral("after QApplication"));
+
+    // Не опрашивать системный прокси (WPAD) при сетевых запросах: на машинах
+    // без интернета/прокси эта синхронная инициализация может висеть очень
+    // долго и блокировать появление окна. Лаунчеру прокси не нужен.
+    QNetworkProxyFactory::setUseSystemConfiguration(false);
+    QNetworkProxy::setApplicationProxy(QNetworkProxy::NoProxy);
+
     app.setApplicationName(QStringLiteral("EnderForge"));
     app.setApplicationDisplayName(QStringLiteral("EnderForge — Minecraft Launcher"));
     app.setOrganizationName(QStringLiteral("EnderForge"));
@@ -123,8 +180,11 @@ int main(int argc, char *argv[])
         return app.exec();
     }
 
+    stage(QStringLiteral("before MainWindow ctor"));
     MainWindow window(dataDir);
+    stage(QStringLiteral("after MainWindow ctor"));
     window.show();
+    stage(QStringLiteral("after show()"));
 
     if (!manifestPath.isEmpty()) {
         // Офлайн-режим: подставляем локальный манифест вместо загрузки из сети
@@ -183,5 +243,8 @@ int main(int argc, char *argv[])
         });
     }
 
-    return app.exec();
+    stage(QStringLiteral("before exec()"));
+    const int rc = app.exec();
+    stage(QStringLiteral("after exec() rc=%1").arg(rc));
+    return rc;
 }
