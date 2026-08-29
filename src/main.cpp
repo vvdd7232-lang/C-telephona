@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "VersionManager.h"
 #include "pixelart.h"
 
 #include <QApplication>
@@ -6,6 +7,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QTextStream>
 #include <QTimer>
 
 namespace {
@@ -44,14 +46,22 @@ int main(int argc, char *argv[])
     app.setApplicationName(QStringLiteral("EnderForge"));
     app.setApplicationDisplayName(QStringLiteral("EnderForge — Minecraft Launcher"));
     app.setOrganizationName(QStringLiteral("EnderForge"));
-    app.setApplicationVersion(QStringLiteral("0.1.0"));
+    app.setApplicationVersion(QStringLiteral("0.2.0"));
 
-    // Скрытый режим: --screenshot <файл.png> — сохранить скриншот окна и выйти.
-    // Полезно для CI и проверки интерфейса без дисплея.
+    // Аргументы командной строки:
+    //   --screenshot <файл.png>  — сохранить скриншот окна и выйти (для CI)
+    //   --manifest <файл.json>   — список версий из локального манифеста (офлайн/тесты)
+    //   --list-versions          — вывести загруженные версии и выйти
     QString screenshotPath;
-    for (int i = 1; i < argc - 1; ++i) {
-        if (qstrcmp(argv[i], "--screenshot") == 0)
-            screenshotPath = QString::fromLocal8Bit(argv[i + 1]);
+    QString manifestPath;
+    bool listVersions = false;
+    for (int i = 1; i < argc; ++i) {
+        if (qstrcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
+            screenshotPath = QString::fromLocal8Bit(argv[++i]);
+        else if (qstrcmp(argv[i], "--manifest") == 0 && i + 1 < argc)
+            manifestPath = QString::fromLocal8Bit(argv[++i]);
+        else if (qstrcmp(argv[i], "--list-versions") == 0)
+            listVersions = true;
     }
 
     // Пиксельный шрифт для заголовков
@@ -68,9 +78,39 @@ int main(int argc, char *argv[])
     MainWindow window;
     window.show();
 
+    if (listVersions) {
+        // Показываем список версий и выходим
+        window.onVersionsRefreshFinished = [&]() {
+            const auto versions = window.versionManager()->versions();
+            QTextStream out(stdout);
+            out << "latest release: " << window.versionManager()->latestRelease() << "\n";
+            out << "latest snapshot: " << window.versionManager()->latestSnapshot() << "\n";
+            out << "total: " << versions.size() << "\n";
+            for (const VersionInfo &v : versions)
+                out << v.id << "\t" << v.type << "\n";
+            out.flush();
+            app.quit();
+        };
+        QTimer::singleShot(12000, &app, &QCoreApplication::quit);
+    }
+
+    if (!manifestPath.isEmpty()) {
+        // Офлайн-режим: подставляем локальный манифест вместо загрузки из сети
+        QTimer::singleShot(0, &window, [&]() {
+            window.loadVersionsFromFile(manifestPath);
+        });
+    }
+
     if (!screenshotPath.isEmpty()) {
-        // Ждём пару кадров, чтобы всё отрисовалось, затем снимаем скриншот
-        QTimer::singleShot(150, &window, [&]() {
+        // Ждём завершения первой загрузки списка версий (или таймаут),
+        // чтобы скриншот отражал актуальное состояние интерфейса.
+        window.onVersionsRefreshFinished = [&]() {
+            QTimer::singleShot(120, &window, [&]() {
+                window.grab().save(screenshotPath);
+                app.quit();
+            });
+        };
+        QTimer::singleShot(8000, &app, [&]() {
             window.grab().save(screenshotPath);
             app.quit();
         });

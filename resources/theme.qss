@@ -181,6 +181,11 @@ QPushButton#refreshButton:hover {
     background: #14201a;
 }
 
+QPushButton#refreshButton:disabled {
+    color: #4a5563;
+    border-color: #1a2531;
+}
+
 QPushButton#launchButton {
     font-family: 'Press Start 2P';
     font-size: 13px;
@@ -201,6 +206,12 @@ QPushButton#launchButton:hover {
 QPushButton#launchButton:pressed {
     background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
                                 stop: 0 #28b053, stop: 1 #1e8f42);
+}
+
+QPushButton#launchButton:disabled {
+    background: #18222d;
+    border: 1px solid #223042;
+    color: #6d7a8a;
 }
 
 QLabel#hint {

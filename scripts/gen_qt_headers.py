@@ -15,6 +15,7 @@ MODULES = {
     'corelib': 'QtCore',
     'gui': 'QtGui',
     'widgets': 'QtWidgets',
+    'network': 'QtNetwork',
 }
 
 SKIP_DIRS = {'doc', 'examples', 'private', '3rdparty', 'unix', 'win', 'wasm', 'android', 'qnx', 'integrity', 'vxworks'}
@@ -76,7 +77,7 @@ def main():
                     continue
                 with open(os.path.join(dirpath, fn), 'r', errors='ignore') as fh:
                     content = fh.read()
-                feature_names.update(re.findall(r'QT_CONFIG\(([a-z0-9_]+)\)', content))
+                feature_names.update(re.findall(r'QT_(?:REQUIRE_)?CONFIG\(([a-z0-9_]+)\)', content))
                 feature_names.update(re.findall(r'QT_FEATURE_([a-z0-9_]+)', content))
                 since_macros.update(re.findall(r'\b(QT_[A-Z_]*_SINCE)\s*\(', content))
     qconfig_body = '// stub qconfig.h (consumer build, все фичи включены)\n'
@@ -103,6 +104,10 @@ def main():
             '// stub qtgui-config.h\n#pragma once\n',
         os.path.join(HEADERS, 'QtWidgets', 'qtwidgets-config.h'):
             '// stub qtwidgets-config.h\n#pragma once\n',
+        os.path.join(HEADERS, 'QtNetwork', 'qtnetwork-config.h'):
+            '// stub qtnetwork-config.h\n#pragma once\n',
+        os.path.join(HEADERS, 'QtNetwork', 'qtnetworkexports.h'):
+            '#pragma once\n#define Q_NETWORK_EXPORT\n',
         os.path.join(HEADERS, 'QtWidgets', 'qtwidgetsexports.h'):
             '#pragma once\n#define Q_WIDGETS_EXPORT\n',
         os.path.join(HEADERS, 'QtCore', 'qtdeprecationdefinitions.h'):
