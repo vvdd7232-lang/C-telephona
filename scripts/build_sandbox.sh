@@ -112,7 +112,9 @@ echo "==> [5/5] Компиляция лаунчера"
 mkdir -p "$BUILD/bin"
 g++ -std=c++17 -fPIC -O2 \
     -DENDERFORGE_RESOURCE_DIR="\"$REPO/resources\"" \
-    "$REPO/src/main.cpp" "$REPO/src/MainWindow.cpp" "$REPO/src/VersionManager.cpp" "$REPO/src/pixelart.cpp" \
+    "$REPO/src/main.cpp" "$REPO/src/MainWindow.cpp" "$REPO/src/VersionManager.cpp" \
+    "$REPO/src/versionmodel.cpp" "$REPO/src/ProfileStore.cpp" "$REPO/src/GameDownloader.cpp" \
+    "$REPO/src/AddProfileDialog.cpp" "$REPO/src/pixelart.cpp" \
     -I "$BUILD/qt6/headers" \
     -I "$BUILD/qt6/headers/QtCore" -I "$BUILD/qt6/headers/QtGui" -I "$BUILD/qt6/headers/QtWidgets" -I "$BUILD/qt6/headers/QtNetwork" \
     -L "$BUILD/qt6/PySide6/Qt/lib" -lQt6Widgets -lQt6Gui -lQt6Core -lQt6Network \
@@ -129,8 +131,31 @@ if [ ! -f "$BUILD/piston-meta/mc/game/version_manifest_v2.json" ]; then
     cd "$BUILD"
 fi
 
+echo "==> Тест скачивания (локальный http-сервер вместо Mojang)"
+mkdir -p "$BUILD/dlserver" "$BUILD/dlout"
+python3 - "$BUILD" <<'PY'
+import json, os, sys
+d = os.path.join(sys.argv[1], 'dlserver')
+# фейковый JSON версии, указывающий на локальный jar
+client_url = 'http://127.0.0.1:8091/client.bin'
+with open(os.path.join(d, 'version.json'), 'w') as f:
+    json.dump({'downloads': {'client': {'url': client_url, 'size': 100000}}}, f)
+with open(os.path.join(d, 'client.bin'), 'wb') as f:
+    f.write(b'\x00' * 100000)
+print('   fake version.json + client.bin (100 KB)')
+PY
+(cd "$BUILD/dlserver" && python3 -m http.server 8091 --bind 127.0.0.1 >/dev/null 2>&1) &
+SERVER_PID=$!
+sleep 1
+LD_LIBRARY_PATH="$BUILD/runtime-libs:$BUILD/qt6/PySide6/Qt/lib" \
+QT_QPA_PLATFORM=offscreen \
+QT_PLUGIN_PATH="$BUILD/qt6/PySide6/Qt/plugins" \
+LC_ALL=C.UTF-8 \
+"$BUILD/bin/enderforge" --download-test "http://127.0.0.1:8091/version.json" "$BUILD/dlout/client.jar" 2>&1 | tail -1
+kill "$SERVER_PID" 2>/dev/null || true
+
 echo "==> Готово: $BUILD/bin/enderforge"
-echo "Скриншот (со списком версий из зеркала манифеста):"
+echo "Скриншот (профили + список версий из зеркала манифеста):"
 mkdir -p "$REPO/docs"
 cd "$REPO"
 # Зеркало актуального манифеста Mojang (для офлайн-теста; сам лаунчер качает с mojang.com)
@@ -139,7 +164,19 @@ if [ ! -f "$MANIFEST" ]; then
     echo "Внимание: зеркало манифеста не найдено, скриншот без списка версий"
     MANIFEST=""
 fi
-ARGS=(--screenshot "$REPO/docs/preview.png")
+# Каталог данных с парой тестовых профилей (как «игры» в Steam)
+TESTDATA="$BUILD/testdata"
+rm -rf "$TESTDATA"
+mkdir -p "$TESTDATA"
+cat > "$TESTDATA/profiles.json" <<'JSON'
+[
+  { "name": "Выживание", "version": "26.2", "loader": "vanilla", "downloaded": true,
+    "createdAt": "2026-08-29T00:00:00Z", "clientPath": "" },
+  { "name": "Моды", "version": "1.21.4", "loader": "fabric", "downloaded": false,
+    "createdAt": "2026-08-29T00:00:00Z", "clientPath": "" }
+]
+JSON
+ARGS=(--screenshot "$REPO/docs/preview.png" --data-dir "$TESTDATA")
 [ -n "$MANIFEST" ] && ARGS+=(--manifest "$MANIFEST")
 LD_LIBRARY_PATH="$BUILD/runtime-libs:$BUILD/qt6/PySide6/Qt/lib" \
 QT_QPA_PLATFORM=offscreen \

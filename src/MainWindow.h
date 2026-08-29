@@ -1,23 +1,30 @@
 #pragma once
 
+#include "ProfileStore.h"
+
 #include <QMainWindow>
 
 #include <functional>
 
-class QComboBox;
+class AddProfileDialog;
+class GameDownloader;
+class ProfileStore;
 class QLabel;
+class QListWidget;
+class QProgressBar;
 class QPushButton;
-class QStandardItemModel;
 class QTimer;
 class VersionManager;
 
 // Главное окно лаунчера EnderForge.
-// Пока это только интерфейс: выбор версии (список из манифеста Mojang)
-// и кнопка «Запустить» (запуск клиента — в следующем обновлении).
+// Слева — библиотека профилей (как игры в Steam), справа — детали
+// выбранного профиля и запуск. Профиль = версия + загрузчик; клиент можно
+// скачать сразу или просто сохранить профиль.
 class MainWindow : public QMainWindow
 {
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    // dataDir — каталог данных (профили, клиенты); пусто = стандартный путь приложения
+    explicit MainWindow(const QString &dataDir = QString(), QWidget *parent = nullptr);
 
     // Начать загрузку списка версий (используется и при старте, и в --screenshot)
     void startVersionRefresh();
@@ -42,17 +49,24 @@ private:
     void buildLaunchPanel();
     void buildStatusBar();
 
+    // Профили
+    void refreshProfileList();
+    void selectProfile(const QString &name);
+    void onAddProfileClicked();
+    void startDownload(const GameProfile &profile);
+    void onProfileListClicked();
+
     // Список версий
-    void populateVersions();
-    void updateVersionUi();
+    void onVersionsLoaded();
+    void onVersionsFailed();
 
     // Действия
     void onLaunchClicked();
-    void onRefreshClicked();
     void onSettingsClicked();
 
     // Уведомление-«тост»
     void showToast(const QString &message);
+    void updateMainPanel();
 
     QWidget *m_central = nullptr;
     QWidget *m_topBar = nullptr;
@@ -61,15 +75,24 @@ private:
     QWidget *m_statusBar = nullptr;
 
     QLabel *m_avatarLabel = nullptr;
-    QComboBox *m_versionSelect = nullptr;
-    QStandardItemModel *m_versionModel = nullptr;
+    QListWidget *m_profileList = nullptr;
+    QPushButton *m_addProfileButton = nullptr;
+
+    QLabel *m_profileNameLabel = nullptr;
+    QLabel *m_profileDetailsLabel = nullptr;
+    QLabel *m_profileStatusLabel = nullptr;
+    QPushButton *m_downloadButton = nullptr;
+    QProgressBar *m_progressBar = nullptr;
     QPushButton *m_launchButton = nullptr;
-    QPushButton *m_refreshButton = nullptr;
     QLabel *m_hintLabel = nullptr;
     QLabel *m_statusRight = nullptr;
     QLabel *m_toast = nullptr;
     QTimer *m_toastTimer = nullptr;
 
     VersionManager *m_versions = nullptr;
+    ProfileStore *m_store = nullptr;
+    GameDownloader *m_downloader = nullptr;
+
+    QString m_selectedProfile;
     bool m_manualRefresh = false;
 };

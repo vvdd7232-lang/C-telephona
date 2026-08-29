@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(EnderForge VERSION 0.2.0 LANGUAGES CXX)
+project(EnderForge VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,14 @@ add_executable(enderforge
     src/MainWindow.cpp
     src/VersionManager.h
     src/VersionManager.cpp
+    src/versionmodel.h
+    src/versionmodel.cpp
+    src/ProfileStore.h
+    src/ProfileStore.cpp
+    src/GameDownloader.h
+    src/GameDownloader.cpp
+    src/AddProfileDialog.h
+    src/AddProfileDialog.cpp
     src/pixelart.h
     src/pixelart.cpp
 )

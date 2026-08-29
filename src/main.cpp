@@ -1,3 +1,5 @@
+#include "AddProfileDialog.h"
+#include "GameDownloader.h"
 #include "MainWindow.h"
 #include "VersionManager.h"
 #include "pixelart.h"
@@ -7,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
 
@@ -46,23 +49,46 @@ int main(int argc, char *argv[])
     app.setApplicationName(QStringLiteral("EnderForge"));
     app.setApplicationDisplayName(QStringLiteral("EnderForge — Minecraft Launcher"));
     app.setOrganizationName(QStringLiteral("EnderForge"));
-    app.setApplicationVersion(QStringLiteral("0.2.0"));
+    app.setApplicationVersion(QStringLiteral("0.3.0"));
 
     // Аргументы командной строки:
     //   --screenshot <файл.png>  — сохранить скриншот окна и выйти (для CI)
     //   --manifest <файл.json>   — список версий из локального манифеста (офлайн/тесты)
     //   --list-versions          — вывести загруженные версии и выйти
+    //   --data-dir <путь>        — каталог данных (профили, клиенты)
+    //   --download-test <url-версии.json> <выход.jar> — проверить скачивание и выйти
+    //   --screenshot-dialog <файл.png> — скриншот диалога «Добавить профиль»
     QString screenshotPath;
+    QString dialogScreenshotPath;
     QString manifestPath;
+    QString dataDir;
+    QString downloadTestUrl;
+    QString downloadTestOut;
     bool listVersions = false;
+
     for (int i = 1; i < argc; ++i) {
-        if (qstrcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
-            screenshotPath = QString::fromLocal8Bit(argv[++i]);
-        else if (qstrcmp(argv[i], "--manifest") == 0 && i + 1 < argc)
-            manifestPath = QString::fromLocal8Bit(argv[++i]);
-        else if (qstrcmp(argv[i], "--list-versions") == 0)
+        const QString arg = QString::fromLocal8Bit(argv[i]);
+        auto next = [&]() -> QString {
+            return (i + 1 < argc) ? QString::fromLocal8Bit(argv[++i]) : QString();
+        };
+        if (arg == QLatin1String("--screenshot"))
+            screenshotPath = next();
+        else if (arg == QLatin1String("--screenshot-dialog"))
+            dialogScreenshotPath = next();
+        else if (arg == QLatin1String("--manifest"))
+            manifestPath = next();
+        else if (arg == QLatin1String("--data-dir"))
+            dataDir = next();
+        else if (arg == QLatin1String("--list-versions"))
             listVersions = true;
+        else if (arg == QLatin1String("--download-test")) {
+            downloadTestUrl = next();
+            downloadTestOut = next();
+        }
     }
+
+    if (dataDir.isEmpty())
+        dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 
     // Пиксельный шрифт для заголовков
     const QString fontPath = findResourcePath(QStringLiteral("resources/fonts/PressStart2P-Regular.ttf"));
@@ -75,8 +101,37 @@ int main(int argc, char *argv[])
     if (!qss.isEmpty())
         app.setStyleSheet(qss);
 
-    MainWindow window;
+    // --- Режим проверки скачивания (без окна) ---
+    if (!downloadTestUrl.isEmpty()) {
+        auto *downloader = new GameDownloader(&app);
+        QTextStream out(stdout);
+        downloader->onProgress = [&](qint64 got, qint64 total) {
+            if (total > 0)
+                out << "progress: " << got << "/" << total << "\n";
+        };
+        downloader->onFinished = [&](bool ok, const QString &error) {
+            if (ok) {
+                out << "DOWNLOAD OK size="
+                    << QFileInfo(downloadTestOut).size() << "\n";
+            } else {
+                out << "DOWNLOAD FAIL: " << error << "\n";
+            }
+            out.flush();
+            app.quit();
+        };
+        downloader->downloadClient(downloadTestUrl, downloadTestOut);
+        return app.exec();
+    }
+
+    MainWindow window(dataDir);
     window.show();
+
+    if (!manifestPath.isEmpty()) {
+        // Офлайн-режим: подставляем локальный манифест вместо загрузки из сети
+        QTimer::singleShot(0, &window, [&]() {
+            window.loadVersionsFromFile(manifestPath);
+        });
+    }
 
     if (listVersions) {
         // Показываем список версий и выходим
@@ -94,24 +149,36 @@ int main(int argc, char *argv[])
         QTimer::singleShot(12000, &app, &QCoreApplication::quit);
     }
 
-    if (!manifestPath.isEmpty()) {
-        // Офлайн-режим: подставляем локальный манифест вместо загрузки из сети
-        QTimer::singleShot(0, &window, [&]() {
-            window.loadVersionsFromFile(manifestPath);
-        });
-    }
+    if (!screenshotPath.isEmpty() || !dialogScreenshotPath.isEmpty()) {
+        // Скриншот диалога «Добавить профиль» (создаём на куче — диалог живёт
+        // пока живёт окно, и таймер успевает сработать)
+        auto shootDialog = [&]() {
+            auto *dlg = new AddProfileDialog(window.versionManager(), &window);
+            dlg->show();
+            QApplication::processEvents(); // раскладка и polish
+            dlg->grab().save(dialogScreenshotPath);
+            app.quit();
+        };
 
-    if (!screenshotPath.isEmpty()) {
-        // Ждём завершения первой загрузки списка версий (или таймаут),
-        // чтобы скриншот отражал актуальное состояние интерфейса.
+        // Ждём завершения первой загрузки списка версий (или таймаут)
         window.onVersionsRefreshFinished = [&]() {
             QTimer::singleShot(120, &window, [&]() {
-                window.grab().save(screenshotPath);
+                if (!screenshotPath.isEmpty())
+                    window.grab().save(screenshotPath);
+                if (!dialogScreenshotPath.isEmpty()) {
+                    shootDialog();
+                    return;
+                }
                 app.quit();
             });
         };
         QTimer::singleShot(8000, &app, [&]() {
-            window.grab().save(screenshotPath);
+            if (!screenshotPath.isEmpty())
+                window.grab().save(screenshotPath);
+            if (!dialogScreenshotPath.isEmpty()) {
+                shootDialog();
+                return;
+            }
             app.quit();
         });
     }

@@ -1,33 +1,24 @@
 #include "MainWindow.h"
 
+#include "AddProfileDialog.h"
+#include "GameDownloader.h"
+#include "ProfileStore.h"
 #include "VersionManager.h"
 #include "pixelart.h"
 
-#include <QBrush>
-#include <QColor>
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QListWidget>
+#include <QPainter>
+#include <QProgressBar>
 #include <QPushButton>
-#include <QStandardItem>
-#include <QStandardItemModel>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
-
-constexpr const char *kPlaceholderLoading = "— загрузка версий…";
-constexpr const char *kPlaceholderEmpty = "— версии недоступны —";
-
-QStandardItem *makeSectionItem(const QString &text)
-{
-    auto *item = new QStandardItem(text);
-    item->setFlags(Qt::NoItemFlags); // не выбирается
-    item->setForeground(QBrush(QColor(0x8b, 0x98, 0xa8)));
-    item->setSelectable(false);
-    return item;
-}
 
 QWidget *makeCard(const QString &title, QWidget *content)
 {
@@ -46,9 +37,21 @@ QWidget *makeCard(const QString &title, QWidget *content)
     return card;
 }
 
+QPixmap statusDot(const QColor &color)
+{
+    QPixmap pm(12, 12);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setBrush(color);
+    p.setPen(Qt::NoPen);
+    p.drawEllipse(1, 1, 10, 10);
+    return pm;
+}
+
 } // namespace
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     : QMainWindow(parent)
 {
     setWindowTitle(QStringLiteral("EnderForge — Minecraft Launcher"));
@@ -93,19 +96,70 @@ MainWindow::MainWindow(QWidget *parent)
     // Иконка окна — травяной блок
     setWindowIcon(QIcon(grassBlockPixmap(6)));
 
+    // Каталог данных
+    QString dir = dataDir;
+    if (dir.isEmpty()) {
+        dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    }
+    m_store = new ProfileStore(dir, this);
+    m_store->load();
+
     // Список версий
     m_versions = new VersionManager(this);
-    m_versions->onVersionsLoaded = [this]() { populateVersions(); };
-    m_versions->onLoadFailed = [this](const QString &) { updateVersionUi(); };
+    m_versions->onVersionsLoaded = [this]() { onVersionsLoaded(); };
+    m_versions->onLoadFailed = [this](const QString &) { onVersionsFailed(); };
     m_versions->onRefreshFinished = [this]() {
-        m_refreshButton->setEnabled(true);
-        m_refreshButton->setText(QStringLiteral("\u21bb"));
         if (onVersionsRefreshFinished)
             onVersionsRefreshFinished();
     };
-    connect(m_versionSelect, &QComboBox::currentIndexChanged, this, [this](int) {
-        m_launchButton->setEnabled(!m_versionSelect->currentData().toString().isEmpty());
-    });
+
+    // Загрузчик клиента
+    m_downloader = new GameDownloader(this);
+    m_downloader->onProgress = [this](qint64 got, qint64 total) {
+        if (total > 0) {
+            m_progressBar->setRange(0, 100);
+            m_progressBar->setValue(int(got * 100 / total));
+            m_profileStatusLabel->setText(
+                QStringLiteral("скачивание… %1 / %2 МБ")
+                    .arg(got / 1024 / 1024)
+                    .arg(total / 1024 / 1024));
+        }
+    };
+    m_downloader->onFinished = [this](bool ok, const QString &error) {
+        m_progressBar->hide();
+        m_downloadButton->setEnabled(true);
+
+        GameProfile profile;
+        bool found = false;
+        for (const GameProfile &p : m_store->profiles()) {
+            if (p.name == m_selectedProfile) {
+                profile = p;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return;
+
+        if (ok) {
+            profile.downloaded = true;
+            profile.downloadError.clear();
+            profile.clientPath = m_store->clientPathFor(profile);
+            showToast(QStringLiteral("Клиент «%1» скачан").arg(profile.name));
+        } else {
+            profile.downloaded = false;
+            profile.downloadError = error;
+            showToast(QStringLiteral("Не удалось скачать: %1").arg(error));
+        }
+        m_store->updateProfile(profile);
+        refreshProfileList();
+        selectProfile(m_selectedProfile);
+    };
+
+    refreshProfileList();
+    // Выбираем первый профиль, если он есть
+    if (!m_store->profiles().isEmpty())
+        selectProfile(m_store->profiles().first().name);
 
     // При старте сразу загружаем список версий
     startVersionRefresh();
@@ -113,17 +167,12 @@ MainWindow::MainWindow(QWidget *parent)
 
 void MainWindow::startVersionRefresh()
 {
-    m_refreshButton->setEnabled(false);
-    m_refreshButton->setText(QStringLiteral("\u2026"));
-    if (m_versionModel && m_versionModel->rowCount() == 0)
-        m_hintLabel->setText(QStringLiteral("Загрузка списка версий…"));
-    m_versions->refresh();
+    if (m_versions)
+        m_versions->refresh();
 }
 
 void MainWindow::loadVersionsFromFile(const QString &path)
 {
-    m_refreshButton->setEnabled(false);
-    m_refreshButton->setText(QStringLiteral("\u2026"));
     m_versions->loadFromFile(path);
 }
 
@@ -150,9 +199,8 @@ void MainWindow::buildTopBar()
     layout->setContentsMargins(18, 0, 18, 0);
     layout->setSpacing(12);
 
-    // Логотип + название
     auto *logo = new QLabel(m_topBar);
-    logo->setPixmap(grassBlockPixmap(5)); // 40x40
+    logo->setPixmap(grassBlockPixmap(5));
     layout->addWidget(logo);
 
     auto *brandBox = new QVBoxLayout;
@@ -167,11 +215,11 @@ void MainWindow::buildTopBar()
 
     layout->addStretch(1);
 
-    auto *versionBadge = new QLabel(QStringLiteral("v0.2.0-alpha"), m_topBar);
+    auto *versionBadge = new QLabel(QStringLiteral("v0.3.0-alpha"), m_topBar);
     versionBadge->setObjectName(QStringLiteral("versionBadge"));
     layout->addWidget(versionBadge);
 
-    auto *settingsBtn = new QPushButton(QStringLiteral("\u2699"), m_topBar); // шестерёнка
+    auto *settingsBtn = new QPushButton(QStringLiteral("\u2699"), m_topBar);
     settingsBtn->setObjectName(QStringLiteral("settingsButton"));
     settingsBtn->setToolTip(QStringLiteral("Настройки"));
     settingsBtn->setFixedSize(38, 38);
@@ -185,7 +233,7 @@ void MainWindow::buildSidebar()
 {
     m_sidebar = new QWidget(m_central);
     m_sidebar->setObjectName(QStringLiteral("sidebar"));
-    m_sidebar->setFixedWidth(280);
+    m_sidebar->setFixedWidth(300);
 
     auto *layout = new QVBoxLayout(m_sidebar);
     layout->setContentsMargins(18, 18, 0, 18);
@@ -198,7 +246,7 @@ void MainWindow::buildSidebar()
     accountLayout->setSpacing(12);
 
     m_avatarLabel = new QLabel(accountRow);
-    m_avatarLabel->setPixmap(steveHeadPixmap(6)); // 48x48
+    m_avatarLabel->setPixmap(steveHeadPixmap(6));
     m_avatarLabel->setObjectName(QStringLiteral("avatar"));
     accountLayout->addWidget(m_avatarLabel);
 
@@ -215,16 +263,29 @@ void MainWindow::buildSidebar()
 
     layout->addWidget(makeCard(QStringLiteral("АККАУНТ"), accountRow));
 
-    // Карточка новостей
-    auto *newsBody = new QLabel(
-        QStringLiteral("Здесь скоро появятся новости и анонсы обновлений."), m_sidebar);
-    newsBody->setObjectName(QStringLiteral("newsBody"));
-    newsBody->setWordWrap(true);
-    newsBody->setAlignment(Qt::AlignCenter);
-    layout->addWidget(makeCard(QStringLiteral("НОВОСТИ"), newsBody), 1);
+    // Карточка профилей
+    m_addProfileButton = new QPushButton(QStringLiteral("＋  Добавить профиль"), m_sidebar);
+    m_addProfileButton->setObjectName(QStringLiteral("addProfileButton"));
+    m_addProfileButton->setCursor(Qt::PointingHandCursor);
+    connect(m_addProfileButton, &QPushButton::clicked, this, &MainWindow::onAddProfileClicked);
+
+    m_profileList = new QListWidget(m_sidebar);
+    m_profileList->setObjectName(QStringLiteral("profileList"));
+    m_profileList->setMinimumHeight(180);
+    connect(m_profileList, &QListWidget::itemClicked, this,
+            &MainWindow::onProfileListClicked);
+
+    auto *profilesBox = new QWidget;
+    auto *profilesLayout = new QVBoxLayout(profilesBox);
+    profilesLayout->setContentsMargins(0, 0, 0, 0);
+    profilesLayout->setSpacing(10);
+    profilesLayout->addWidget(m_addProfileButton);
+    profilesLayout->addWidget(m_profileList, 1);
+
+    layout->addWidget(makeCard(QStringLiteral("ПРОФИЛИ"), profilesBox), 1);
 }
 
-// ---------- Карточка запуска ----------
+// ---------- Панель запуска ----------
 
 void MainWindow::buildLaunchPanel()
 {
@@ -233,50 +294,61 @@ void MainWindow::buildLaunchPanel()
 
     auto *layout = new QVBoxLayout(m_launchPanel);
     layout->setContentsMargins(48, 42, 48, 42);
-    layout->setSpacing(20);
+    layout->setSpacing(16);
     layout->addStretch(1);
 
     auto *sectionTitle = new QLabel(QStringLiteral("ЗАПУСК ИГРЫ"), m_launchPanel);
     sectionTitle->setObjectName(QStringLiteral("sectionTitle"));
     layout->addWidget(sectionTitle, 0, Qt::AlignHCenter);
 
-    auto *sectionSub = new QLabel(
-        QStringLiteral("Выберите версию и вперёд — в блоки!"), m_launchPanel);
+    auto *sectionSub = new QLabel(QStringLiteral("Выберите профиль слева или создайте новый"),
+                                  m_launchPanel);
     sectionSub->setObjectName(QStringLiteral("sectionSub"));
     layout->addWidget(sectionSub, 0, Qt::AlignHCenter);
 
-    // Выбор версии
-    auto *versionLabel = new QLabel(QStringLiteral("ВЕРСИЯ ИГРЫ"), m_launchPanel);
-    versionLabel->setObjectName(QStringLiteral("versionLabel"));
-    layout->addWidget(versionLabel);
+    // Данные выбранного профиля
+    m_profileNameLabel = new QLabel(QStringLiteral("— профиль не выбран —"), m_launchPanel);
+    m_profileNameLabel->setObjectName(QStringLiteral("profileName"));
+    m_profileNameLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(m_profileNameLabel);
 
-    auto *versionRow = new QHBoxLayout;
-    versionRow->setSpacing(10);
+    m_profileDetailsLabel = new QLabel(QString(), m_launchPanel);
+    m_profileDetailsLabel->setObjectName(QStringLiteral("profileDetails"));
+    m_profileDetailsLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(m_profileDetailsLabel);
 
-    m_versionModel = new QStandardItemModel(this);
-    m_versionModel->appendRow(new QStandardItem(QString::fromLatin1(kPlaceholderLoading)));
+    m_profileStatusLabel = new QLabel(QString(), m_launchPanel);
+    m_profileStatusLabel->setObjectName(QStringLiteral("profileStatus"));
+    m_profileStatusLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(m_profileStatusLabel);
 
-    m_versionSelect = new QComboBox(m_launchPanel);
-    m_versionSelect->setObjectName(QStringLiteral("versionSelect"));
-    m_versionSelect->setFixedHeight(44);
-    m_versionSelect->setModel(m_versionModel);
-    versionRow->addWidget(m_versionSelect, 1);
+    // Кнопка скачивания + прогресс
+    m_downloadButton = new QPushButton(QStringLiteral("\u2b07  Скачать клиент"), m_launchPanel);
+    m_downloadButton->setObjectName(QStringLiteral("downloadButton"));
+    m_downloadButton->setFixedHeight(44);
+    m_downloadButton->setCursor(Qt::PointingHandCursor);
+    connect(m_downloadButton, &QPushButton::clicked, this, [this]() {
+        for (const GameProfile &p : m_store->profiles()) {
+            if (p.name == m_selectedProfile) {
+                startDownload(p);
+                break;
+            }
+        }
+    });
+    layout->addWidget(m_downloadButton);
 
-    m_refreshButton = new QPushButton(QStringLiteral("\u21bb"), m_launchPanel);
-    m_refreshButton->setObjectName(QStringLiteral("refreshButton"));
-    m_refreshButton->setToolTip(QStringLiteral("Обновить список версий"));
-    m_refreshButton->setFixedSize(44, 44);
-    connect(m_refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshClicked);
-    versionRow->addWidget(m_refreshButton);
-
-    layout->addLayout(versionRow);
+    m_progressBar = new QProgressBar(m_launchPanel);
+    m_progressBar->setObjectName(QStringLiteral("progressBar"));
+    m_progressBar->setRange(0, 100);
+    m_progressBar->setValue(0);
+    m_progressBar->hide();
+    layout->addWidget(m_progressBar);
 
     // Кнопка запуска
     m_launchButton = new QPushButton(QStringLiteral("\u25b6   ЗАПУСТИТЬ"), m_launchPanel);
     m_launchButton->setObjectName(QStringLiteral("launchButton"));
     m_launchButton->setFixedHeight(56);
     m_launchButton->setCursor(Qt::PointingHandCursor);
-    m_launchButton->setEnabled(false); // станет активной, когда выберем версию
     connect(m_launchButton, &QPushButton::clicked, this, &MainWindow::onLaunchClicked);
     layout->addWidget(m_launchButton);
 
@@ -287,6 +359,8 @@ void MainWindow::buildLaunchPanel()
     layout->addWidget(m_hintLabel);
 
     layout->addStretch(1);
+
+    updateMainPanel();
 }
 
 // ---------- Нижняя панель ----------
@@ -311,120 +385,198 @@ void MainWindow::buildStatusBar()
     layout->addWidget(m_statusRight);
 }
 
-// ---------- Список версий ----------
+// ---------- Профили ----------
 
-void MainWindow::populateVersions()
+void MainWindow::refreshProfileList()
 {
-    m_versionModel->clear();
+    m_profileList->clear();
+    for (const GameProfile &p : m_store->profiles()) {
+        auto *item = new QListWidgetItem;
+        item->setText(QStringLiteral("%1\n%2 · %3")
+                          .arg(p.name, p.versionId, loaderDisplayName(p.loader)));
+        item->setIcon(QIcon(statusDot(statusColor(p))));
+        item->setData(Qt::UserRole, p.name);
+        item->setSizeHint(QSize(0, 48));
+        m_profileList->addItem(item);
+    }
 
-    const QVector<VersionInfo> versions = m_versions->versions();
-    if (versions.isEmpty()) {
-        updateVersionUi();
+    if (m_store->profiles().isEmpty())
+        m_hintLabel->setText(
+            QStringLiteral("Профилей пока нет. Нажмите «Добавить профиль», выберите "
+                           "версию и загрузчик — или просто сохраните профиль, как игру в Steam."));
+}
+
+void MainWindow::selectProfile(const QString &name)
+{
+    m_selectedProfile = name;
+    for (int i = 0; i < m_profileList->count(); ++i) {
+        if (m_profileList->item(i)->data(Qt::UserRole).toString() == name) {
+            m_profileList->setCurrentRow(i);
+            break;
+        }
+    }
+    updateMainPanel();
+}
+
+void MainWindow::onProfileListClicked()
+{
+    QListWidgetItem *item = m_profileList->currentItem();
+    if (item)
+        selectProfile(item->data(Qt::UserRole).toString());
+}
+
+void MainWindow::onAddProfileClicked()
+{
+    AddProfileDialog dialog(m_versions, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    GameProfile profile = dialog.resultProfile;
+    // уникальное имя
+    QString name = profile.name;
+    int suffix = 2;
+    const auto existing = [&](const QString &n) {
+        for (const GameProfile &p : m_store->profiles())
+            if (p.name == n)
+                return true;
+        return false;
+    };
+    while (existing(name))
+        name = QStringLiteral("%1 (%2)").arg(profile.name).arg(suffix++);
+    profile.name = name;
+
+    m_store->addProfile(profile);
+    refreshProfileList();
+    selectProfile(profile.name);
+    m_hintLabel->setText(QStringLiteral("Профиль «%1» добавлен").arg(profile.name));
+
+    if (dialog.downloadNow())
+        startDownload(profile);
+}
+
+void MainWindow::startDownload(const GameProfile &profile)
+{
+    if (m_downloader->isBusy()) {
+        showToast(QStringLiteral("Уже идёт скачивание"));
         return;
     }
 
-    const QString latestRelease = m_versions->latestRelease();
-    const QString latestSnapshot = m_versions->latestSnapshot();
+    const QString versionJsonUrl = m_versions->versionJsonUrl(profile.versionId);
+    if (versionJsonUrl.isEmpty()) {
+        showToast(QStringLiteral("Версия %1 не найдена в списке").arg(profile.versionId));
+        return;
+    }
 
-    // --- "Последние версии" ---
-    m_versionModel->appendRow(makeSectionItem(QStringLiteral("ПОСЛЕДНИЕ ВЕРСИИ")));
-    const auto addLatest = [&](const QString &id, const QString &suffix) {
-        if (id.isEmpty())
-            return;
-        auto *item = new QStandardItem(QStringLiteral("%1  %2").arg(id, suffix));
-        item->setData(id, Qt::UserRole);
-        item->setForeground(QBrush(QColor(0x3d, 0xdc, 0x68)));
-        m_versionModel->appendRow(item);
-    };
-    addLatest(latestRelease, QStringLiteral("\u2605  последний релиз"));
-    addLatest(latestSnapshot, QStringLiteral("\u2606  снапшот"));
+    // сбрасываем статус профиля
+    GameProfile reset = profile;
+    reset.downloaded = false;
+    reset.downloadError.clear();
+    m_store->updateProfile(reset);
 
-    // --- Группы ---
-    const auto appendGroup = [&](const QString &title, const QStringList &types,
-                                 const QColor &color) {
-        QVector<QStandardItem *> items;
-        for (const VersionInfo &v : versions) {
-            if (!types.contains(v.type))
-                continue;
-            auto *item = new QStandardItem(v.id);
-            item->setData(v.id, Qt::UserRole);
-            item->setData(v.type, Qt::UserRole + 1);
-            item->setForeground(QBrush(color));
-            item->setToolTip(QStringLiteral("%1 · %2")
-                                 .arg(v.type, v.releaseTime.date().toString(Qt::ISODate)));
-            items.append(item);
-        }
-        if (items.isEmpty())
-            return;
-        m_versionModel->appendRow(makeSectionItem(title));
-        for (QStandardItem *item : items)
-            m_versionModel->appendRow(item);
-    };
+    m_profileStatusLabel->setText(QStringLiteral("скачивание… 0%"));
+    m_progressBar->setValue(0);
+    m_progressBar->show();
+    m_downloadButton->setEnabled(false);
 
-    appendGroup(QStringLiteral("РЕЛИЗЫ"), { QStringLiteral("release") },
-                QColor(0xe8, 0xee, 0xf5));
-    appendGroup(QStringLiteral("СНАПШОТЫ"), { QStringLiteral("snapshot") },
-                QColor(0x9a, 0xa6, 0xb5));
-    appendGroup(QStringLiteral("СТАРЫЕ БЕТЫ И АЛЬФЫ"),
-                { QStringLiteral("old_beta"), QStringLiteral("old_alpha") },
-                QColor(0x7a, 0x86, 0x96));
+    const QString dest = m_store->clientPathFor(profile);
+    m_downloader->downloadClient(versionJsonUrl, dest);
+    refreshProfileList();
+}
 
-    // По умолчанию выбираем последний релиз
-    for (int i = 0; i < m_versionModel->rowCount(); ++i) {
-        QStandardItem *item = m_versionModel->item(i);
-        if (item->data(Qt::UserRole).toString() == latestRelease) {
-            m_versionSelect->setCurrentIndex(i);
+// ---------- Список версий ----------
+
+void MainWindow::onVersionsLoaded()
+{
+    const int count = m_versions->versions().size();
+    m_statusRight->setText(QStringLiteral("профилей: %1 · версий: %2")
+                               .arg(m_store->profiles().size())
+                               .arg(count));
+    if (m_manualRefresh)
+        showToast(QStringLiteral("Список версий обновлён (%1 шт.)").arg(count));
+    m_manualRefresh = false;
+}
+
+void MainWindow::onVersionsFailed()
+{
+    m_statusRight->setText(QStringLiteral("список версий недоступен"));
+    if (m_manualRefresh)
+        showToast(QStringLiteral("Не удалось обновить список версий"));
+    m_manualRefresh = false;
+}
+
+// ---------- Панель запуска: состояние ----------
+
+void MainWindow::updateMainPanel()
+{
+    if (!m_store)
+        return; // вызывается из buildLaunchPanel до создания хранилища
+
+    const bool hasProfile = !m_selectedProfile.isEmpty();
+    GameProfile selected;
+    for (const GameProfile &p : m_store->profiles()) {
+        if (p.name == m_selectedProfile) {
+            selected = p;
             break;
         }
     }
 
-    updateVersionUi();
-}
-
-void MainWindow::updateVersionUi()
-{
-    const bool loaded = m_versions->isLoaded();
-    const int count = m_versions->versions().size();
-
-    if (loaded) {
-        m_hintLabel->setText(
-            QStringLiteral("Доступно версий: %1 · запуск игры появится в следующем обновлении")
-                .arg(count));
-        m_statusRight->setText(QStringLiteral("версий: %1 · последний релиз: %2")
-                                   .arg(count)
-                                   .arg(m_versions->latestRelease()));
-        if (m_manualRefresh)
-            showToast(QStringLiteral("Список версий обновлён (%1 шт.)").arg(count));
-    } else {
-        // Место «загрузки» занято ошибкой
-        m_versionModel->clear();
-        m_versionModel->appendRow(new QStandardItem(QString::fromLatin1(kPlaceholderEmpty)));
-        m_hintLabel->setText(
-            QStringLiteral("Не удалось загрузить список версий. Проверьте подключение к интернету."));
-        m_statusRight->setText(QStringLiteral("список версий недоступен"));
-        if (m_manualRefresh)
-            showToast(QStringLiteral("Не удалось обновить список версий"));
+    if (!hasProfile) {
+        m_profileNameLabel->setText(QStringLiteral("— профиль не выбран —"));
+        m_profileDetailsLabel->clear();
+        m_profileStatusLabel->clear();
+        m_downloadButton->setEnabled(false);
+        m_launchButton->setEnabled(false);
+        return;
     }
-    m_manualRefresh = false;
+
+    m_profileNameLabel->setText(selected.name);
+    m_profileDetailsLabel->setText(
+        QStringLiteral("Версия %1 · %2")
+            .arg(selected.versionId, loaderDisplayName(selected.loader)));
+
+    if (m_downloader->isBusy()) {
+        // статус уже показывает прогресс
+    } else {
+        m_profileStatusLabel->setText(statusLabel(selected));
+        QColor color = statusColor(selected);
+        m_profileStatusLabel->setStyleSheet(
+            QStringLiteral("color: %1;").arg(color.name()));
+    }
+
+    m_downloadButton->setEnabled(!selected.downloaded && !m_downloader->isBusy());
+    m_downloadButton->setText(selected.downloaded
+                                  ? QStringLiteral("\u2713  Клиент скачан")
+                                  : QStringLiteral("\u2b07  Скачать клиент"));
+
+    m_launchButton->setEnabled(true);
 }
 
 // ---------- Действия ----------
 
 void MainWindow::onLaunchClicked()
 {
-    const QString version = m_versionSelect->currentData().toString();
-    if (version.isEmpty()) {
-        showToast(QStringLiteral("Сначала выберите версию"));
+    if (m_selectedProfile.isEmpty()) {
+        showToast(QStringLiteral("Сначала создайте профиль"));
         return;
     }
-    // TODO: загрузка клиента и запуск игры
-    showToast(QStringLiteral("Запускаю %1… (скоро!)").arg(version));
-}
 
-void MainWindow::onRefreshClicked()
-{
-    m_manualRefresh = true;
-    startVersionRefresh();
+    GameProfile selected;
+    for (const GameProfile &p : m_store->profiles()) {
+        if (p.name == m_selectedProfile) {
+            selected = p;
+            break;
+        }
+    }
+
+    if (!selected.downloaded) {
+        showToast(QStringLiteral("Сначала скачайте клиент для профиля «%1»").arg(selected.name));
+        return;
+    }
+
+    // TODO: реальный запуск (сборка командной строки Java)
+    showToast(QStringLiteral("Запускаю «%1» (%2 · %3)… скоро!")
+                  .arg(selected.name, selected.versionId,
+                       loaderDisplayName(selected.loader)));
 }
 
 void MainWindow::onSettingsClicked()
@@ -448,3 +600,4 @@ void MainWindow::showToast(const QString &message)
 
     m_toastTimer->start();
 }
+

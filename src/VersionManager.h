@@ -15,6 +15,7 @@ struct VersionInfo {
     QString id;             // например "26.2" или "1.21.4"
     QString type;           // "release" | "snapshot" | "old_beta" | "old_alpha"
     QDateTime releaseTime;  // дата релиза
+    QString url;            // URL JSON-описания версии (нужен для скачивания клиента)
 };
 
 // Загрузка и парсинг списка версий Minecraft.
@@ -39,6 +40,9 @@ public:
 
     // Все версии (в порядке манифеста: новые сверху)
     QVector<VersionInfo> versions() const { return m_versions; }
+
+    // URL JSON-описания версии (для скачивания клиента), пусто если не найдено
+    QString versionJsonUrl(const QString &id) const;
 
     bool isLoaded() const { return !m_versions.isEmpty(); }
 

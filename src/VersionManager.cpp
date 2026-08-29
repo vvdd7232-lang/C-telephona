@@ -131,7 +131,17 @@ void VersionManager::parseManifest(const QByteArray &data)
         info.type = obj.value(QStringLiteral("type")).toString();
         info.releaseTime = QDateTime::fromString(
             obj.value(QStringLiteral("releaseTime")).toString(), Qt::ISODate);
+        info.url = obj.value(QStringLiteral("url")).toString();
         if (!info.id.isEmpty())
             m_versions.append(info);
     }
+}
+
+QString VersionManager::versionJsonUrl(const QString &id) const
+{
+    for (const VersionInfo &v : m_versions) {
+        if (v.id == id)
+            return v.url;
+    }
+    return QString();
 }
