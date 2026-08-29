@@ -1,0 +1,241 @@
+/* ============================================================
+   EnderForge — тема в стиле Minecraft (тёмная)
+   ============================================================ */
+
+* {
+    font-family: 'Segoe UI', 'Noto Sans', sans-serif;
+    font-size: 13px;
+    color: #e8eef5;
+}
+
+QMainWindow, QWidget#central {
+    background: #0a0e13;
+}
+
+/* ---------- Верхняя панель ---------- */
+
+QWidget#topBar {
+    background: #10161e;
+    border-bottom: 1px solid #223042;
+}
+
+QLabel#brandName {
+    font-family: 'Press Start 2P';
+    font-size: 16px;
+    color: #ffffff;
+    letter-spacing: 1px;
+}
+
+QLabel#brandTagline {
+    font-family: 'Press Start 2P';
+    font-size: 8px;
+    color: #8b98a8;
+    letter-spacing: 2px;
+}
+
+QLabel#versionBadge {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 11px;
+    color: #8b98a8;
+    background: #18222d;
+    border: 1px solid #223042;
+    border-radius: 12px;
+    padding: 5px 10px;
+}
+
+QPushButton#settingsButton {
+    font-size: 16px;
+    color: #8b98a8;
+    background: #18222d;
+    border: 1px solid #223042;
+    border-radius: 9px;
+}
+
+QPushButton#settingsButton:hover {
+    color: #3ddc68;
+    border-color: #3ddc68;
+    background: #14201a;
+}
+
+/* ---------- Боковая панель ---------- */
+
+QWidget#sidebar {
+    background: transparent;
+}
+
+QFrame#card {
+    background: #131a23;
+    border: 1px solid #223042;
+    border-radius: 14px;
+}
+
+QLabel#cardTitle {
+    font-family: 'Press Start 2P';
+    font-size: 9px;
+    color: #8b98a8;
+    letter-spacing: 2px;
+}
+
+QLabel#avatar {
+    background: #0e151d;
+    border: 2px solid #2d4057;
+    border-radius: 10px;
+    padding: 2px;
+}
+
+QLabel#accountName {
+    font-size: 14px;
+    font-weight: 600;
+    color: #e8eef5;
+}
+
+QLabel#accountStatus {
+    font-size: 12px;
+    color: #e3b341;
+}
+
+QLabel#newsBody {
+    font-size: 13px;
+    color: #8b98a8;
+    border: 1px dashed #2d4057;
+    border-radius: 10px;
+    padding: 16px;
+}
+
+/* ---------- Карточка запуска ---------- */
+
+QFrame#launchPanel {
+    background: #0e141b;
+}
+
+QLabel#sectionTitle {
+    font-family: 'Press Start 2P';
+    font-size: 18px;
+    color: #3ddc68;
+}
+
+QLabel#sectionSub {
+    font-size: 14px;
+    color: #8b98a8;
+}
+
+QLabel#versionLabel {
+    font-family: 'Press Start 2P';
+    font-size: 9px;
+    color: #8b98a8;
+    letter-spacing: 2px;
+}
+
+QComboBox#versionSelect {
+    background: #0e151d;
+    border: 1px solid #2d4057;
+    border-radius: 10px;
+    padding: 0 14px;
+    font-size: 14px;
+    color: #e8eef5;
+}
+
+QComboBox#versionSelect:hover {
+    border-color: #3ddc68;
+}
+
+QComboBox#versionSelect:focus {
+    border-color: #3ddc68;
+}
+
+QComboBox#versionSelect::drop-down {
+    border: none;
+    width: 28px;
+}
+
+QComboBox#versionSelect::down-arrow {
+    width: 12px;
+    height: 12px;
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid #8b98a8;
+    margin-right: 10px;
+}
+
+QComboBox#versionSelect QAbstractItemView {
+    background: #131a23;
+    border: 1px solid #2d4057;
+    border-radius: 8px;
+    selection-background-color: #223042;
+    padding: 4px;
+    outline: none;
+}
+
+QPushButton#refreshButton {
+    font-size: 18px;
+    color: #8b98a8;
+    background: #18222d;
+    border: 1px solid #223042;
+    border-radius: 10px;
+}
+
+QPushButton#refreshButton:hover {
+    color: #3ddc68;
+    border-color: #3ddc68;
+    background: #14201a;
+}
+
+QPushButton#launchButton {
+    font-family: 'Press Start 2P';
+    font-size: 13px;
+    font-weight: bold;
+    color: #06210f;
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                stop: 0 #45e67a, stop: 1 #28b053);
+    border: 1px solid #5cf18e;
+    border-radius: 12px;
+    letter-spacing: 1px;
+}
+
+QPushButton#launchButton:hover {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                stop: 0 #55f088, stop: 1 #2fbd5c);
+}
+
+QPushButton#launchButton:pressed {
+    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
+                                stop: 0 #28b053, stop: 1 #1e8f42);
+}
+
+QLabel#hint {
+    font-size: 12px;
+    color: #6d7a8a;
+}
+
+/* ---------- Нижняя панель ---------- */
+
+QWidget#statusBar {
+    background: #10161e;
+    border-top: 1px solid #223042;
+}
+
+QLabel#statusText {
+    font-size: 12px;
+    color: #6d7a8a;
+}
+
+/* ---------- Тост ---------- */
+
+QLabel#toast {
+    background: #1c2733;
+    border: 1px solid #2d4057;
+    border-radius: 12px;
+    padding: 12px 20px;
+    font-size: 13px;
+    color: #e8eef5;
+}
+
+/* ---------- Туда-сюда ---------- */
+
+QToolTip {
+    background: #1c2733;
+    color: #e8eef5;
+    border: 1px solid #2d4057;
+    padding: 4px 8px;
+}

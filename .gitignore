@@ -1,0 +1,13 @@
+# Сборка и артефакты
+/build/
+*.o
+*.obj
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# IDE
+.vscode/
+.idea/
+*.user
