@@ -1,4 +1,5 @@
 #include "MinecraftInstaller.h"
+#include "NetUtil.h"
 
 #include <QDir>
 #include <QFile>
@@ -83,6 +84,51 @@ QString fromJson(const QJsonObject &o, const char *key)
     return o.value(QString::fromLatin1(key)).toString();
 }
 
+QByteArray readAllFile(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    return f.readAll();
+}
+
+QByteArray peekFile(const QString &path, qint64 maxBytes = 512)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    return f.read(maxBytes);
+}
+
+QJsonDocument readJsonFile(const QString &path, QString *errOut)
+{
+    const QByteArray data = readAllFile(path);
+    if (isBadDownloadPayload(data)) {
+        if (errOut)
+            *errOut = describeBadPayload(data);
+        return {};
+    }
+    QJsonParseError pe;
+    const QJsonDocument doc = QJsonDocument::fromJson(data, &pe);
+    if (pe.error != QJsonParseError::NoError) {
+        if (errOut)
+            *errOut = describeBadPayload(data);
+        return {};
+    }
+    return doc;
+}
+
+void configureDownloadRequest(QNetworkRequest *request, int timeoutMs)
+{
+    request->setTransferTimeout(timeoutMs);
+    request->setMaximumRedirectsAllowed(10);
+    request->setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                          QNetworkRequest::NoLessSafeRedirectPolicy);
+    request->setHeader(QNetworkRequest::UserAgentHeader,
+                       QStringLiteral("EnderForge/0.3 (Minecraft Launcher)"));
+    request->setRawHeader("Accept", "*/*");
+}
+
 } // namespace
 
 MinecraftInstaller::MinecraftInstaller(QObject *parent)
@@ -154,22 +200,31 @@ void MinecraftInstaller::install(const QString &versionId, const QString &loader
     m_nativeJars.clear();
     m_loaderJar.clear();
     m_requiredJavaMajor = 17;
+    m_fileTasks.clear();
+    m_taskIndex = 0;
+    m_nativeIndex = 0;
 
     downloadVersionJson();
 }
 
 void MinecraftInstaller::downloadFile(const QUrl &url, const QString &destPath,
-                                      std::function<void(bool, const QString &)> done)
+                                      std::function<void(bool, const QString &)> done,
+                                      qint64 expectedSize)
 {
     if (m_cancelled) {
         done(false, QStringLiteral("Отменено"));
         return;
     }
-    // Уже скачано (и непустое) — пропускаем
+
     const qint64 existing = QFileInfo(destPath).size();
     if (existing > 0) {
-        done(true, QString());
-        return;
+        const QByteArray head = peekFile(destPath, 512);
+        const bool sizeOk = expectedSize <= 0 || existing == expectedSize;
+        if (sizeOk && !payloadLooksLikeHtml(head)) {
+            done(true, QString());
+            return;
+        }
+        QFile::remove(destPath);
     }
 
     QDir().mkpath(QFileInfo(destPath).absolutePath());
@@ -181,23 +236,56 @@ void MinecraftInstaller::downloadFile(const QUrl &url, const QString &destPath,
     }
 
     QNetworkRequest request(url);
-    request.setTransferTimeout(60000);
-    request.setHeader(QNetworkRequest::UserAgentHeader,
-                      QStringLiteral("EnderForge/0.3 (Minecraft Launcher)"));
+    configureDownloadRequest(&request, 300000);
     QNetworkReply *reply = m_network->get(request);
+
+    // Пишем тело ответа: потоково (readyRead) + остаток в finished.
+    // Иначе QSaveFile коммитит 0 байт.
+    auto *head = new QByteArray;
+    auto *written = new qint64(0);
+    auto writeChunk = [save, head, written](const QByteArray &chunk) {
+        if (chunk.isEmpty())
+            return;
+        if (head->size() < 512)
+            head->append(chunk.left(512 - head->size()));
+        save->write(chunk);
+        *written += chunk.size();
+    };
 
     connect(reply, &QNetworkReply::downloadProgress, this,
             [this, destPath](qint64 got, qint64 total) {
                 setProgress(m_currentStage, m_currentDone, m_currentTotal,
                             got, total, QFileInfo(destPath).fileName());
             });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, save, done]() {
+    connect(reply, &QNetworkReply::readyRead, this, [reply, writeChunk]() {
+        writeChunk(reply->readAll());
+    });
+    connect(reply, &QNetworkReply::finished, this,
+            [reply, save, done, expectedSize, writeChunk, head, written]() {
+        writeChunk(reply->readAll());
         reply->deleteLater();
+
+        const QByteArray preview = *head;
+        const qint64 n = *written;
+        delete head;
+        delete written;
+
         if (reply->error() != QNetworkReply::NoError) {
-            const QString err = reply->errorString();
             save->cancelWriting();
             save->deleteLater();
-            done(false, err);
+            done(false, reply->errorString());
+            return;
+        }
+        if (n <= 0 || payloadLooksLikeHtml(preview)) {
+            save->cancelWriting();
+            save->deleteLater();
+            done(false, describeBadPayload(preview));
+            return;
+        }
+        if (expectedSize > 0 && n < expectedSize) {
+            save->cancelWriting();
+            save->deleteLater();
+            done(false, QStringLiteral("Файл обрезан: %1 из %2 байт").arg(n).arg(expectedSize));
             return;
         }
         if (!save->commit()) {
@@ -224,7 +312,13 @@ void MinecraftInstaller::downloadVersionJson()
             finish(false, QStringLiteral("Не удалось получить описание версии: %1").arg(err));
             return;
         }
-        m_vi = QJsonDocument::fromJson(QFile(dest).readAll()).object();
+        QString parseErr;
+        m_vi = readJsonFile(dest, &parseErr).object();
+        if (m_vi.isEmpty()) {
+            finish(false, QStringLiteral("Не удалось получить описание версии: %1")
+                              .arg(parseErr.isEmpty() ? describeBadPayload(readAllFile(dest)) : parseErr));
+            return;
+        }
 
         // Наследуемая версия (например, сборки Fabric): берём родительский JSON
         if (!m_vi.contains(QStringLiteral("downloads")) && m_vi.contains(QStringLiteral("inheritsFrom"))) {
@@ -241,7 +335,14 @@ void MinecraftInstaller::downloadVersionJson()
                     finish(false, QStringLiteral("Родительская версия: %1").arg(err2));
                     return;
                 }
-                QJsonObject parentObj = QJsonDocument::fromJson(QFile(parentDest).readAll()).object();
+                QString parentErr;
+                QJsonObject parentObj = readJsonFile(parentDest, &parentErr).object();
+                if (parentObj.isEmpty()) {
+                    finish(false, QStringLiteral("Родительская версия: %1")
+                                      .arg(parentErr.isEmpty() ? describeBadPayload(readAllFile(parentDest))
+                                                               : parentErr));
+                    return;
+                }
                 // libraries склеиваем (родитель + своя)
                 QJsonArray libs;
                 for (const QJsonValue &v : parentObj.value(QStringLiteral("libraries")).toArray())
@@ -270,6 +371,7 @@ void MinecraftInstaller::downloadClient()
         finish(false, QStringLiteral("В описании версии нет ссылки на клиент"));
         return;
     }
+    const qint64 clientSize = static_cast<qint64>(client.value(QStringLiteral("size")).toDouble(0));
     m_clientJar = QDir(m_dataDir).filePath(QStringLiteral("versions/") + m_versionId + QLatin1Char('/') + m_versionId + QStringLiteral(".jar"));
     setProgress(QStringLiteral("клиент"), 1, 1, 0, 0, QFileInfo(m_clientJar).fileName());
     downloadFile(QUrl(url), m_clientJar, [this](bool ok, const QString &err) {
@@ -278,19 +380,14 @@ void MinecraftInstaller::downloadClient()
             return;
         }
         downloadLibraries();
-    });
+    }, clientSize);
 }
-
-struct LibraryTask {
-    QUrl url;
-    QString dest;
-    bool isNative = false;
-};
 
 void MinecraftInstaller::downloadLibraries()
 {
     const QJsonArray arr = m_vi.value(QStringLiteral("libraries")).toArray();
-    QList<LibraryTask> tasks;
+    m_fileTasks.clear();
+    m_taskIndex = 0;
 
     for (const QJsonValue &v : arr) {
         const QJsonObject lib = v.toObject();
@@ -302,6 +399,7 @@ void MinecraftInstaller::downloadLibraries()
         // Natives: classifiers по платформе windows
         bool isNative = false;
         QString url, path;
+        qint64 size = 0;
         const QJsonObject natives = lib.value(QStringLiteral("natives")).toObject();
         if (natives.contains(QStringLiteral("windows"))) {
             QString classifier = fromJson(natives, "windows");
@@ -316,12 +414,14 @@ void MinecraftInstaller::downloadLibraries()
             if (!art.isEmpty()) {
                 url = fromJson(art, "url");
                 path = fromJson(art, "path");
+                size = static_cast<qint64>(art.value(QStringLiteral("size")).toDouble(0));
                 isNative = true;
             }
         } else {
             const QJsonObject artifact = downloads.value(QStringLiteral("artifact")).toObject();
             url = fromJson(artifact, "url");
             path = fromJson(artifact, "path");
+            size = static_cast<qint64>(artifact.value(QStringLiteral("size")).toDouble(0));
         }
 
         // Старые версии: url задан базовым + maven-координаты
@@ -349,33 +449,37 @@ void MinecraftInstaller::downloadLibraries()
             m_nativeJars.append(dest);
         else
             m_libraryJars.append(dest);
-        tasks.append({ QUrl(url), dest, isNative });
+        m_fileTasks.append({ url, dest, size });
     }
 
-    if (tasks.isEmpty()) {
+    if (m_fileTasks.isEmpty()) {
         downloadAssetIndex();
         return;
     }
 
-    // Последовательное скачивание с прогрессом
     m_currentStage = QStringLiteral("библиотеки");
-    m_currentTotal = tasks.size();
-    std::function<void(int)> next = [this, tasks, &next](int i) {
-        if (m_cancelled || i >= tasks.size()) {
-            downloadAssetIndex();
+    m_currentTotal = m_fileTasks.size();
+    downloadNextLibrary();
+}
+
+void MinecraftInstaller::downloadNextLibrary()
+{
+    if (m_cancelled || m_taskIndex >= m_fileTasks.size()) {
+        downloadAssetIndex();
+        return;
+    }
+    const FileTask t = m_fileTasks.at(m_taskIndex);
+    m_currentDone = m_taskIndex;
+    setProgress(m_currentStage, m_taskIndex, m_fileTasks.size(), 0, 0,
+                QFileInfo(t.dest).fileName());
+    downloadFile(QUrl(t.url), t.dest, [this](bool ok, const QString &err) {
+        if (!ok) {
+            finish(false, QStringLiteral("Библиотека: %1").arg(err));
             return;
         }
-        m_currentDone = i;
-        setProgress(m_currentStage, i, tasks.size(), 0, 0, QFileInfo(tasks.at(i).dest).fileName());
-        downloadFile(tasks.at(i).url, tasks.at(i).dest, [this, tasks, i, &next](bool ok, const QString &err) {
-            if (!ok) {
-                finish(false, QStringLiteral("Библиотека: %1").arg(err));
-                return;
-            }
-            next(i + 1);
-        });
-    };
-    next(0);
+        ++m_taskIndex;
+        downloadNextLibrary();
+    }, t.expectedSize);
 }
 
 void MinecraftInstaller::downloadAssetIndex()
@@ -405,92 +509,106 @@ void MinecraftInstaller::downloadAssets()
 {
     const QString indexPath =
         QDir(m_dataDir).filePath(QStringLiteral("assets/indexes/") + m_assetIndexId + QStringLiteral(".json"));
-    const QJsonObject index = QJsonDocument::fromJson(QFile(indexPath).readAll()).object();
+    QString parseErr;
+    const QJsonObject index = readJsonFile(indexPath, &parseErr).object();
+    if (index.isEmpty()) {
+        finish(false, QStringLiteral("Индекс ресурсов: %1")
+                          .arg(parseErr.isEmpty() ? describeBadPayload(readAllFile(indexPath)) : parseErr));
+        return;
+    }
     const QJsonObject objects = index.value(QStringLiteral("objects")).toObject();
 
-    struct Asset { QString hash; qint64 size; };
-    QList<Asset> assets;
-    for (auto it = objects.constBegin(); it != objects.constEnd(); ++it)
-        assets.append({ it.key(), static_cast<qint64>(it.value().toObject().value(QStringLiteral("size")).toDouble()) });
+    m_fileTasks.clear();
+    m_taskIndex = 0;
+    m_assetsRoot = QDir(m_dataDir).filePath(QStringLiteral("assets"));
 
-    if (assets.isEmpty()) {
+    for (auto it = objects.constBegin(); it != objects.constEnd(); ++it) {
+        const QJsonObject obj = it.value().toObject();
+        // В манифесте ключ — имя ресурса, hash лежит в поле "hash"
+        const QString hash = obj.value(QStringLiteral("hash")).toString();
+        const qint64 size = static_cast<qint64>(obj.value(QStringLiteral("size")).toDouble(0));
+        if (hash.size() < 2)
+            continue;
+        const QString dest = m_assetsRoot + QStringLiteral("/objects/") + hash.left(2) + QLatin1Char('/') + hash;
+        const QString url = QString::fromLatin1(kAssetsUrl) + hash.left(2) + QLatin1Char('/') + hash;
+        m_fileTasks.append({ url, dest, size });
+    }
+
+    if (m_fileTasks.isEmpty()) {
         extractNatives();
         return;
     }
 
     m_currentStage = QStringLiteral("ресурсы");
-    m_currentTotal = assets.size();
-    m_assetsRoot = QDir(m_dataDir).filePath(QStringLiteral("assets"));
+    m_currentTotal = m_fileTasks.size();
+    downloadNextAsset();
+}
 
-    std::function<void(int)> next = [this, assets, &next](int i) {
-        if (m_cancelled || i >= assets.size()) {
-            extractNatives();
-            return;
+void MinecraftInstaller::downloadNextAsset()
+{
+    while (!m_cancelled && m_taskIndex < m_fileTasks.size()) {
+        const FileTask t = m_fileTasks.at(m_taskIndex);
+        m_currentDone = m_taskIndex;
+        const QString shortHash = QFileInfo(t.dest).fileName().left(8);
+        setProgress(m_currentStage, m_taskIndex, m_fileTasks.size(), 0, 0, shortHash);
+        if (t.expectedSize > 0 && QFileInfo(t.dest).size() == t.expectedSize) {
+            ++m_taskIndex;
+            continue;
         }
-        const Asset &a = assets.at(i);
-        const QString dest = m_assetsRoot + QStringLiteral("/objects/") + a.hash.left(2) + QLatin1Char('/') + a.hash;
-        // Пропускаем уже скачанные (по размеру)
-        if (QFileInfo(dest).size() == a.size) {
-            m_currentDone = i;
-            setProgress(m_currentStage, i, assets.size(), 0, 0, a.hash.left(8));
-            next(i + 1);
-            return;
-        }
-        m_currentDone = i;
-        setProgress(m_currentStage, i, assets.size(), 0, 0, a.hash.left(8));
-        const QUrl url(QString::fromLatin1(kAssetsUrl) + a.hash.left(2) + QLatin1Char('/') + a.hash);
-        downloadFile(url, dest, [this, i, a, &next](bool ok, const QString &err) {
+        downloadFile(QUrl(t.url), t.dest, [this, shortHash](bool ok, const QString &err) {
             if (!ok) {
-                finish(false, QStringLiteral("Ресурс %1: %2").arg(a.hash.left(8), err));
+                finish(false, QStringLiteral("Ресурс %1: %2").arg(shortHash, err));
                 return;
             }
-            next(i + 1);
-        });
-    };
-    next(0);
+            ++m_taskIndex;
+            downloadNextAsset();
+        }, t.expectedSize);
+        return;
+    }
+    extractNatives();
 }
 
 void MinecraftInstaller::extractNatives()
 {
     m_nativesDir = QDir(m_dataDir).filePath(QStringLiteral("versions/") + m_versionId + QStringLiteral("/natives"));
     QDir().mkpath(m_nativesDir);
-    // Очистка
     for (const QFileInfo &f : QDir(m_nativesDir).entryInfoList(QDir::Files))
         QFile::remove(f.absoluteFilePath());
 
-    // Windows 10+ содержит tar.exe (bsdtar), умеющий распаковывать zip/jar
+    m_nativeIndex = 0;
+    extractNextNative();
+}
+
+void MinecraftInstaller::extractNextNative()
+{
+    if (m_cancelled || m_nativeIndex >= m_nativeJars.size()) {
+        resolveLoader();
+        return;
+    }
+
     QString tar = QStringLiteral("tar");
     const QString sysTar = QStringLiteral("C:/Windows/System32/tar.exe");
     if (QFileInfo::exists(sysTar))
         tar = sysTar;
 
-    std::function<void(int)> next = [this, tar, &next](int i) {
-        if (m_cancelled || i >= m_nativeJars.size()) {
-            resolveLoader();
-            return;
-        }
-        setProgress(QStringLiteral("нативные библиотеки"), i, m_nativeJars.size(), 0, 0,
-                    QFileInfo(m_nativeJars.at(i)).fileName());
-        auto *p = new QProcess(this);
-        p->setProgram(tar);
-        p->setArguments({ QStringLiteral("-xf"), m_nativeJars.at(i), QStringLiteral("-C"), m_nativesDir });
-        connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-                [this, p, i, &next](int code, QProcess::ExitStatus) {
-                    p->deleteLater();
-                    if (code != 0) {
-                        finish(false, QStringLiteral("Не удалось распаковать natives: %1")
-                                         .arg(QFileInfo(m_nativeJars.at(i)).fileName()));
-                        return;
-                    }
-                    next(i + 1);
-                });
-        p->start();
-    };
-    if (m_nativeJars.isEmpty()) {
-        resolveLoader();
-        return;
-    }
-    next(0);
+    setProgress(QStringLiteral("нативные библиотеки"), m_nativeIndex, m_nativeJars.size(), 0, 0,
+                QFileInfo(m_nativeJars.at(m_nativeIndex)).fileName());
+    auto *p = new QProcess(this);
+    p->setProgram(tar);
+    p->setArguments({ QStringLiteral("-xf"), m_nativeJars.at(m_nativeIndex),
+                      QStringLiteral("-C"), m_nativesDir });
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, p](int code, QProcess::ExitStatus) {
+                p->deleteLater();
+                if (code != 0) {
+                    finish(false, QStringLiteral("Не удалось распаковать natives: %1")
+                                     .arg(QFileInfo(m_nativeJars.at(m_nativeIndex)).fileName()));
+                    return;
+                }
+                ++m_nativeIndex;
+                extractNextNative();
+            });
+    p->start();
 }
 
 void MinecraftInstaller::resolveLoader()
@@ -522,9 +640,12 @@ void MinecraftInstaller::resolveLoader()
             finish(false, QStringLiteral("Не удалось получить данные загрузчика: %1").arg(err));
             return;
         }
-        const QJsonArray arr = QJsonDocument::fromJson(QFile(metaDest).readAll()).array();
+        QString parseErr;
+        const QJsonArray arr = readJsonFile(metaDest, &parseErr).array();
         if (arr.isEmpty()) {
-            finish(false, QStringLiteral("Загрузчик недоступен для версии %1").arg(m_versionId));
+            finish(false, parseErr.isEmpty()
+                              ? QStringLiteral("Загрузчик недоступен для версии %1").arg(m_versionId)
+                              : QStringLiteral("Не удалось получить данные загрузчика: %1").arg(parseErr));
             return;
         }
         const QJsonObject first = arr.first().toObject();
@@ -771,7 +892,7 @@ bool MinecraftInstaller::buildClasspath(const QString &versionId, const QString 
 
     // Библиотеки из version JSON (только artifact, без natives)
     const QString vjPath = QDir(dataDir).filePath(QStringLiteral("versions/") + versionId + QStringLiteral(".json"));
-    const QJsonObject vi = QJsonDocument::fromJson(QFile(vjPath).readAll()).object();
+    const QJsonObject vi = readJsonFile(vjPath, nullptr).object();
     const QJsonArray arr = vi.value(QStringLiteral("libraries")).toArray();
     for (const QJsonValue &v : arr) {
         const QJsonObject lib = v.toObject();

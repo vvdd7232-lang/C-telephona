@@ -1,4 +1,5 @@
 #include "VersionManager.h"
+#include "NetUtil.h"
 
 #include <QFile>
 #include <QJsonArray>
@@ -34,9 +35,13 @@ void VersionManager::refresh()
 
     for (const char *url : kManifestUrls) {
         QNetworkRequest request(QUrl(QString::fromLatin1(url)));
-        request.setTransferTimeout(10000);
+        request.setTransferTimeout(15000);
+        request.setMaximumRedirectsAllowed(10);
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                             QNetworkRequest::NoLessSafeRedirectPolicy);
         request.setHeader(QNetworkRequest::UserAgentHeader,
-                          QStringLiteral("EnderForge/0.1 (Minecraft Launcher)"));
+                          QStringLiteral("EnderForge/0.3 (Minecraft Launcher)"));
+        request.setRawHeader("Accept", "application/json");
         QNetworkReply *reply = m_network->get(request);
         connect(reply, &QNetworkReply::finished, this,
                 [this, reply]() { handleReply(reply); });
@@ -74,10 +79,18 @@ void VersionManager::handleReply(QNetworkReply *reply)
     }
 
     if (reply->error() == QNetworkReply::NoError) {
-        parseManifest(reply->readAll());
-        if (isLoaded()) {
-            finishLoading(true);
-            return;
+        const QByteArray data = reply->readAll();
+        if (isBadDownloadPayload(data)) {
+            if (m_lastError.isEmpty())
+                m_lastError = describeBadPayload(data);
+        } else {
+            parseManifest(data);
+            if (isLoaded()) {
+                finishLoading(true);
+                return;
+            }
+            if (m_lastError.isEmpty())
+                m_lastError = describeBadPayload(data);
         }
     } else if (m_lastError.isEmpty()) {
         m_lastError = reply->errorString();

@@ -104,6 +104,8 @@ cmake --build build
 │   ├── ProfileStore.h/.cpp   # профили (profiles.json)
 │   ├── AddProfileDialog.h/.cpp  # диалог «Добавить профиль»
 │   ├── GameDownloader.h/.cpp # скачивание клиента с прогрессом
+│   ├── MinecraftInstaller.h/.cpp # полная установка и запуск
+│   ├── NetUtil.h             # диагностика пустых/HTML-ответов Mojang
 │   ├── VersionManager.h/.cpp # загрузка/парсинг манифеста Mojang
 │   ├── versionmodel.h/.cpp   # группированный список версий
 │   └── pixelart.h/.cpp       # пиксель-арт (Стив, травяной блок)

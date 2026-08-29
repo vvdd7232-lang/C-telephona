@@ -114,6 +114,7 @@ g++ -std=c++17 -fPIC -O2 \
     -DENDERFORGE_RESOURCE_DIR="\"$REPO/resources\"" \
     "$REPO/src/main.cpp" "$REPO/src/MainWindow.cpp" "$REPO/src/VersionManager.cpp" \
     "$REPO/src/versionmodel.cpp" "$REPO/src/ProfileStore.cpp" "$REPO/src/GameDownloader.cpp" \
+    "$REPO/src/MinecraftInstaller.cpp" \
     "$REPO/src/AddProfileDialog.cpp" "$REPO/src/pixelart.cpp" \
     -I "$BUILD/qt6/headers" \
     -I "$BUILD/qt6/headers/QtCore" -I "$BUILD/qt6/headers/QtGui" -I "$BUILD/qt6/headers/QtWidgets" -I "$BUILD/qt6/headers/QtNetwork" \

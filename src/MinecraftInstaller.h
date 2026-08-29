@@ -1,9 +1,11 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QList>
 #include <QObject>
 #include <QProcess>
 #include <QStringList>
+#include <QUrl>
 
 #include <functional>
 
@@ -81,13 +83,17 @@ public:
 private:
     // --- установка ---
     void downloadFile(const QUrl &url, const QString &destPath,
-                      std::function<void(bool, const QString &)> done);
+                      std::function<void(bool, const QString &)> done,
+                      qint64 expectedSize = 0);
     void downloadVersionJson();
     void downloadClient();
     void downloadLibraries();
+    void downloadNextLibrary();
     void downloadAssetIndex();
     void downloadAssets();
+    void downloadNextAsset();
     void extractNatives();
+    void extractNextNative();
     void resolveLoader();
     void finish(bool ok, const QString &err);
     void setProgress(const QString &stage, int done, int total,
@@ -130,6 +136,16 @@ private:
     QString m_assetsRoot;          // dataDir/assets
     QString m_loaderJar;           // fabric/quilt loader jar (абсолютный путь)
     int m_requiredJavaMajor = 17;  // требуемая версия Java
+
+    // Очередь последовательных загрузок (не лямбда на стеке — иначе UAF)
+    struct FileTask {
+        QString url;
+        QString dest;
+        qint64 expectedSize = 0;
+    };
+    QList<FileTask> m_fileTasks;
+    int m_taskIndex = 0;
+    int m_nativeIndex = 0;
 
     QNetworkAccessManager *m_network = nullptr;
     QProcess *m_gameProcess = nullptr;
