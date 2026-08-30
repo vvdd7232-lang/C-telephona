@@ -92,14 +92,16 @@ QString loadTextFile(const QString &path)
 
 int main(int argc, char *argv[])
 {
+    // Сразу отключаем Qt-опрос системного прокси (WPAD): на Windows эта
+    // синхронная инициализация может блокировать запуск на несколько минут.
+    // Делаем до создания QApplication, чтобы QtNetwork не успел её запустить.
+    qputenv("QT_NO_SYSTEMPROXY", "1");
+
     initLog();
     stage(QStringLiteral("before QApplication"));
     QApplication app(argc, argv);
     stage(QStringLiteral("after QApplication"));
 
-    // Не опрашивать системный прокси (WPAD) при сетевых запросах: на машинах
-    // без интернета/прокси эта синхронная инициализация может висеть очень
-    // долго и блокировать появление окна. Лаунчеру прокси не нужен.
     QNetworkProxyFactory::setUseSystemConfiguration(false);
     QNetworkProxy::setApplicationProxy(QNetworkProxy::NoProxy);
 

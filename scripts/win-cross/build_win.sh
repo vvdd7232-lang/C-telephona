@@ -145,6 +145,7 @@ echo "  exe: $(stat -c%s /tmp/enderforge.exe) байт"
 echo "==> [9/10] dist"
 rm -rf dist && mkdir -p dist/EnderForge/{platforms,styles,imageformats,tls,networkinformation,iconengines}
 cp /tmp/enderforge.exe dist/EnderForge/EnderForge.exe
+cp -r "$ROOT/resources" dist/EnderForge/
 for d in Qt6Core Qt6Gui Qt6Network Qt6Widgets; do cp winqt/wx/PySide6/$d.dll dist/EnderForge/; done
 for d in msvcp140 msvcp140_1 msvcp140_2 msvcp140_codecvt_ids vcruntime140 vcruntime140_1; do cp winqt/wx/PySide6/$d.dll dist/EnderForge/; done
 cp winqt/wx/PySide6/plugins/platforms/qwindows.dll dist/EnderForge/platforms/

@@ -186,8 +186,10 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     if (!m_store->profiles().isEmpty())
         selectProfile(m_store->profiles().first().name);
 
-    // При старте сразу загружаем список версий
-    startVersionRefresh();
+    // Сетевую загрузку версий откладываем до начала event loop: на Windows
+    // первая инициализация QtNetwork может блокировать (WPAD/DNS), и окно
+    // должно успеть показаться до неё.
+    QTimer::singleShot(0, this, [this]() { startVersionRefresh(); });
 }
 
 void MainWindow::startVersionRefresh()
