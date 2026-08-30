@@ -105,8 +105,22 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     m_store = new ProfileStore(dir, this);
     m_store->load();
 
-    // Список версий
-    m_versions = new VersionManager(this);
+    refreshProfileList();
+    // Выбираем первый профиль, если он есть
+    if (!m_store->profiles().isEmpty())
+        selectProfile(m_store->profiles().first().name);
+
+    // VersionManager и MinecraftInstaller создаём ЧЕРЕЗ МГНОВЕНИЕ после
+    // показа окна: их конструкторы создают QNetworkAccessManager, который
+    // на Windows может блокироваться (WPAD/DNS/TLS). Даём Qt отрисовать окно,
+    // а только потом создаём сетевой бэкенд.
+    QTimer::singleShot(300, this, &MainWindow::initializeBackend);
+}
+
+void MainWindow::initializeBackend()
+{
+    if (!m_versions)
+        m_versions = new VersionManager(this);
     m_versions->onVersionsLoaded = [this]() { onVersionsLoaded(); };
     m_versions->onLoadFailed = [this](const QString &) { onVersionsFailed(); };
     m_versions->onRefreshFinished = [this]() {
@@ -114,8 +128,8 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
             onVersionsRefreshFinished();
     };
 
-    // Установщик и запускатор игры
-    m_installer = new MinecraftInstaller(this);
+    if (!m_installer)
+        m_installer = new MinecraftInstaller(this);
     m_installer->onProgress = [this](const InstallProgress &p) {
         const int percent = p.totalSteps > 0
             ? qBound(0, p.completedSteps * 100 / p.totalSteps, 100)
@@ -181,14 +195,9 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
         updateMainPanel();
     };
 
-    refreshProfileList();
-    // Выбираем первый профиль, если он есть
-    if (!m_store->profiles().isEmpty())
-        selectProfile(m_store->profiles().first().name);
-
-    // Сетевую загрузку версий откладываем до начала event loop: на Windows
-    // первая инициализация QtNetwork может блокировать (WPAD/DNS), и окно
-    // должно успеть показаться до неё.
+    updateMainPanel();
+    // Сетевую загрузку версий запускаем следующей итерацией event loop:
+    // окно гарантированно отрисовано, даже если QtNetwork зависнет позже.
     QTimer::singleShot(0, this, [this]() { startVersionRefresh(); });
 }
 
@@ -200,6 +209,10 @@ void MainWindow::startVersionRefresh()
 
 void MainWindow::loadVersionsFromFile(const QString &path)
 {
+    if (!m_versions) {
+        QTimer::singleShot(0, this, [this, path]() { loadVersionsFromFile(path); });
+        return;
+    }
     m_versions->loadFromFile(path);
 }
 
@@ -454,6 +467,10 @@ void MainWindow::onProfileListClicked()
 
 void MainWindow::onAddProfileClicked()
 {
+    if (!m_versions) {
+        showToast(QStringLiteral("Загрузка списка версий ещё не завершена — попробуйте через секунду"));
+        return;
+    }
     AddProfileDialog dialog(m_versions, this);
     if (dialog.exec() != QDialog::Accepted)
         return;
@@ -483,6 +500,13 @@ void MainWindow::onAddProfileClicked()
 
 void MainWindow::startDownload(const GameProfile &profile, bool launchAfterInstall)
 {
+    if (!m_installer || !m_versions) {
+        showToast(QStringLiteral("Подготовка лаунчера…"));
+        QTimer::singleShot(0, this, [this, profile, launchAfterInstall]() {
+            startDownload(profile, launchAfterInstall);
+        });
+        return;
+    }
     if (m_installer->isBusy()) {
         showToast(QStringLiteral("Уже идёт установка"));
         return;
@@ -539,8 +563,17 @@ void MainWindow::onVersionsFailed()
 
 void MainWindow::updateMainPanel()
 {
-    if (!m_store || !m_installer)
-        return; // вызывается из buildLaunchPanel до создания хранилища/установщика
+    // Вызывается из buildLaunchPanel до создания бэкенда — тогда кнопки
+    // блокируем и не трогаем установщик.
+    if (!m_store)
+        return;
+    if (!m_installer) {
+        if (m_downloadButton) m_downloadButton->setEnabled(false);
+        if (m_launchButton) m_launchButton->setEnabled(false);
+        if (m_hintLabel)
+            m_hintLabel->setText(QStringLiteral("Подготовка лаунчера…"));
+        return;
+    }
 
     const bool hasProfile = !m_selectedProfile.isEmpty();
     GameProfile selected;
@@ -592,6 +625,10 @@ void MainWindow::updateMainPanel()
 
 void MainWindow::onLaunchClicked()
 {
+    if (!m_installer) {
+        showToast(QStringLiteral("Подготовка лаунчера…"));
+        return;
+    }
     // Игра запущена — кнопка работает как «Остановить»
     if (m_installer->isGameRunning()) {
         m_installer->stopGame();
@@ -635,6 +672,10 @@ void MainWindow::onLaunchClicked()
 
 void MainWindow::launchProfile(const GameProfile &profile)
 {
+    if (!m_installer) {
+        showToast(QStringLiteral("Подготовка лаунчера…"));
+        return;
+    }
     if (m_installer->isGameRunning())
         return;
 

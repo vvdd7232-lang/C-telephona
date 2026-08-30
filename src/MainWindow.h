@@ -50,6 +50,11 @@ private:
     void buildLaunchPanel();
     void buildStatusBar();
 
+    // Создание VersionManager/MinecraftInstaller — откладывается до старта
+    // event loop: конструкторы этих классов создают QNetworkAccessManager,
+    // который на Windows может блокировать до показа окна.
+    void initializeBackend();
+
     // Профили
     void refreshProfileList();
     void selectProfile(const QString &name);

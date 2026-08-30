@@ -82,6 +82,8 @@ QString findResourcePath(const QString &relative)
 
 QString loadTextFile(const QString &path)
 {
+    if (path.isEmpty())
+        return QString();
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return QString();
