@@ -106,7 +106,7 @@ int main(int argc, char *argv[])
     app.setApplicationName(QStringLiteral("EnderForge"));
     app.setApplicationDisplayName(QStringLiteral("EnderForge — Minecraft Launcher"));
     app.setOrganizationName(QStringLiteral("EnderForge"));
-    app.setApplicationVersion(QStringLiteral("0.3.0"));
+    app.setApplicationVersion(QStringLiteral("0.5.0"));
 
     // Аргументы командной строки:
     //   --screenshot <файл.png>  — сохранить скриншот окна и выйти (для CI)

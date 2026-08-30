@@ -32,8 +32,8 @@ struct InstallProgress {
 //   5. natives (извлечение .dll из jar)          -> dataDir/versions/<id>/natives
 //   6. загрузчик fabric/quilt (jar + mainClass)  -> dataDir/libraries/…
 //
-// Запуск (launchGame): поиск Java (или скачивание Temurin JRE 17), сборка
-// classpath, запуск клиента через QProcess с аргументами официального
+// Запуск (launchGame): поиск Java нужной версии (или скачивание Temurin JRE),
+// сборка classpath, запуск клиента через QProcess с аргументами официального
 // лаунчера (офлайн-сессия: singleplayer работает).
 //
 // Замечание: без Q_OBJECT (собирается без moc) — колбэки через std::function.
@@ -57,12 +57,14 @@ public:
 
     // --- Java ------------------------------------------------------------
     // Найти установленную Java (JAVA_HOME, стандартные пути, where java).
-    // Вернёт путь к java.exe или пустую строку.
-    static QString findJava();
+    // requiredMajor > 0 — искать Java этой мажорной версии (или ближайшую
+    // доступную не ниже). Вернёт путь к java.exe или пустую строку.
+    static QString findJava(int requiredMajor = 0);
 
-    // Убедиться, что Java есть: если findJava() пуст — скачать Temurin JRE 17
-    // и распаковать в dataDir/runtime. done(ok, error).
-    void ensureJava(const QString &dataDir,
+    // Убедиться, что Java нужной версии есть: если подходящей Java нет —
+    // скачать Temurin JRE нужного мажора и распаковать в dataDir/runtime.
+    // done(ok, error).
+    void ensureJava(const QString &versionId, const QString &dataDir,
                     const std::function<void(bool, const QString &)> &done);
 
     // --- Запуск ----------------------------------------------------------
@@ -95,6 +97,9 @@ private:
     void extractNatives();
     void extractNextNative();
     void resolveLoader();
+    void downloadLoaderLibraries();
+    void downloadNextLoaderLibrary();
+    void determineJavaMajor();
     void finish(bool ok, const QString &err);
     void setProgress(const QString &stage, int done, int total,
                      qint64 got = 0, qint64 all = 0, const QString &file = QString());
@@ -106,7 +111,7 @@ private:
 
     // --- java ---
     static QString javaMajorVersion(const QString &javaExe);
-    void downloadJre(const QString &dataDir,
+    void downloadJre(const QString &dataDir, int major,
                      const std::function<void(bool, const QString &)> &done);
     void extractZipWithTar(const QString &zipPath, const QString &destDir,
                            std::function<void(bool)> done);
@@ -148,5 +153,6 @@ private:
     int m_nativeIndex = 0;
 
     QNetworkAccessManager *m_network = nullptr;
+    QNetworkReply *m_activeReply = nullptr;
     QProcess *m_gameProcess = nullptr;
 };

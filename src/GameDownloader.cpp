@@ -40,7 +40,7 @@ void GameDownloader::fetchVersionJson()
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                          QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setHeader(QNetworkRequest::UserAgentHeader,
-                      QStringLiteral("EnderForge/0.3 (Minecraft Launcher)"));
+                      QStringLiteral("EnderForge/0.5 (Minecraft Launcher)"));
     request.setRawHeader("Accept", "*/*");
     QNetworkReply *reply = m_network->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
@@ -83,7 +83,7 @@ void GameDownloader::startJarDownload(const QString &url, qint64 expectedSize)
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                          QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setHeader(QNetworkRequest::UserAgentHeader,
-                      QStringLiteral("EnderForge/0.3 (Minecraft Launcher)"));
+                      QStringLiteral("EnderForge/0.5 (Minecraft Launcher)"));
     request.setRawHeader("Accept", "*/*");
 
     auto *save = new QSaveFile(m_destPath, this);

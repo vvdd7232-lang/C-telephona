@@ -60,7 +60,7 @@ public slots:
 
 private:
     void parseManifest(const QByteArray &data);
-    void handleReply(QNetworkReply *reply);
+    void handleReply(QNetworkReply *reply, int generation);
     void finishLoading(bool ok);
 
     QNetworkAccessManager *m_network = nullptr;
@@ -68,6 +68,7 @@ private:
     QString m_latestRelease;
     QString m_latestSnapshot;
     int m_pendingReplies = 0;
+    int m_generation = 0;
     bool m_finished = false;
     QString m_lastError;
 };

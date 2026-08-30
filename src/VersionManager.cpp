@@ -32,6 +32,7 @@ void VersionManager::refresh()
 
     m_finished = false;
     m_lastError.clear();
+    const int generation = ++m_generation;
 
     for (const char *url : kManifestUrls) {
         QNetworkRequest request(QUrl(QString::fromLatin1(url)));
@@ -40,11 +41,11 @@ void VersionManager::refresh()
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                              QNetworkRequest::NoLessSafeRedirectPolicy);
         request.setHeader(QNetworkRequest::UserAgentHeader,
-                          QStringLiteral("EnderForge/0.3 (Minecraft Launcher)"));
+                          QStringLiteral("EnderForge/0.5 (Minecraft Launcher)"));
         request.setRawHeader("Accept", "application/json");
         QNetworkReply *reply = m_network->get(request);
         connect(reply, &QNetworkReply::finished, this,
-                [this, reply]() { handleReply(reply); });
+                [this, reply, generation]() { handleReply(reply, generation); });
         ++m_pendingReplies;
     }
 }
@@ -55,6 +56,9 @@ bool VersionManager::loadFromFile(const QString &path)
     if (!file.open(QIODevice::ReadOnly))
         return false;
 
+    // Отменяем любой сетевой запрос: локальный манифест имеет приоритет.
+    ++m_generation;
+    m_pendingReplies = 0;
     parseManifest(file.readAll());
     m_finished = true;
     if (isLoaded()) {
@@ -68,13 +72,12 @@ bool VersionManager::loadFromFile(const QString &path)
     return true;
 }
 
-void VersionManager::handleReply(QNetworkReply *reply)
+void VersionManager::handleReply(QNetworkReply *reply, int generation)
 {
     reply->deleteLater();
 
-    if (m_finished) {
-        // Основной ответ уже обработан — остальные игнорируем.
-        --m_pendingReplies;
+    if (generation != m_generation || m_finished) {
+        // Ответ от предыдущего refresh() или после загрузки из файла — игнорируем.
         return;
     }
 
@@ -86,6 +89,7 @@ void VersionManager::handleReply(QNetworkReply *reply)
         } else {
             parseManifest(data);
             if (isLoaded()) {
+                m_pendingReplies = 0;
                 finishLoading(true);
                 return;
             }
@@ -96,7 +100,7 @@ void VersionManager::handleReply(QNetworkReply *reply)
         m_lastError = reply->errorString();
     }
 
-    if (--m_pendingReplies == 0)
+    if (--m_pendingReplies <= 0)
         finishLoading(false);
 }
 
@@ -105,6 +109,7 @@ void VersionManager::finishLoading(bool ok)
     if (m_finished)
         return;
     m_finished = true;
+    m_pendingReplies = 0;
 
     if (ok) {
         if (onVersionsLoaded)

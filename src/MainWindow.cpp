@@ -240,7 +240,7 @@ void MainWindow::buildTopBar()
 
     layout->addStretch(1);
 
-    auto *versionBadge = new QLabel(QStringLiteral("v0.3.0-alpha"), m_topBar);
+    auto *versionBadge = new QLabel(QStringLiteral("v0.5.0"), m_topBar);
     versionBadge->setObjectName(QStringLiteral("versionBadge"));
     layout->addWidget(versionBadge);
 
@@ -639,25 +639,21 @@ void MainWindow::launchProfile(const GameProfile &profile)
     const QString dataDir = m_store->dataDir();
     const QString gameDir = gameDirFor(profile);
 
-    if (MinecraftInstaller::findJava().isEmpty()) {
-        m_profileStatusLabel->setText(QStringLiteral("Java не найдена — скачиваю…"));
-        m_progressBar->setValue(0);
-        m_progressBar->show();
-        m_installer->ensureJava(dataDir, [this, profile, dataDir, gameDir](bool ok, const QString &err) {
-            m_progressBar->hide();
-            if (!ok) {
-                showToast(QStringLiteral("Не удалось получить Java: %1").arg(err));
-                return;
-            }
-            showToast(QStringLiteral("Java готова, запускаю…"));
-            if (!m_installer->launchGame(profile.versionId, dataDir, gameDir))
-                showToast(QStringLiteral("Не удалось запустить игру: не все файлы на месте"));
-        });
-        return;
-    }
-
-    if (!m_installer->launchGame(profile.versionId, dataDir, gameDir))
-        showToast(QStringLiteral("Не удалось запустить игру: не все файлы на месте. Нажмите «Скачать игру»"));
+    // Подготавливаем нужную для версии Java (находит подходящую или скачивает)
+    // и сразу запускаем.
+    m_profileStatusLabel->setText(QStringLiteral("Java…"));
+    m_progressBar->setValue(0);
+    m_progressBar->show();
+    m_installer->ensureJava(profile.versionId, dataDir,
+                            [this, profile, dataDir, gameDir](bool ok, const QString &err) {
+        m_progressBar->hide();
+        if (!ok) {
+            showToast(QStringLiteral("Не удалось получить Java: %1").arg(err));
+            return;
+        }
+        if (!m_installer->launchGame(profile.versionId, dataDir, gameDir))
+            showToast(QStringLiteral("Не удалось запустить игру: не все файлы на месте. Нажмите «Скачать игру»"));
+    });
 }
 
 void MainWindow::onSettingsClicked()

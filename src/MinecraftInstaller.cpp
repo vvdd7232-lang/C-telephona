@@ -18,13 +18,13 @@
 
 namespace {
 
+QJsonDocument readJsonFile(const QString &path, QString *errOut);
+
 constexpr const char *kAssetsUrl = "https://resources.download.minecraft.net/";
 constexpr const char *kFabricMetaUrl = "https://meta.fabricmc.net/v2/versions/loader/";
 constexpr const char *kFabricMavenUrl = "https://maven.fabricmc.net/";
 constexpr const char *kQuiltMetaUrl = "https://meta.quiltmc.org/v3/versions/loader/";
 constexpr const char *kQuiltMavenUrl = "https://maven.quiltmc.org/repository/release/";
-constexpr const char *kJreUrl =
-    "https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jre/hotspot/normal/eclipse";
 
 // Путь библиотеки из Maven-координат: group:artifact:version[:classifier]
 QString mavenPathFromName(const QString &name, const QString &classifier)
@@ -84,6 +84,75 @@ QString fromJson(const QJsonObject &o, const char *key)
     return o.value(QString::fromLatin1(key)).toString();
 }
 
+// Мажорная версия Java по ID версии Minecraft. Используется как запасной
+// вариант, если в version JSON нет поля javaVersion.majorVersion.
+int inferJavaMajor(const QString &versionId)
+{
+    QRegularExpression re(QStringLiteral("^(\\d+)(?:\\.(\\d+))?(?:\\.(\\d+))?"));
+    const auto m = re.match(versionId);
+    if (!m.hasMatch())
+        return 17;
+
+    const int first = m.captured(1).toInt();
+    if (first == 1) {
+        const int minor = m.captured(2).toInt();
+        const int patch = m.captured(3).isEmpty() ? -1 : m.captured(3).toInt();
+        if (minor >= 21)
+            return 21;
+        if (minor == 20)
+            return patch >= 5 ? 21 : 17; // 1.20.5+ → Java 21
+        if (minor >= 17)
+            return 17;
+        return 8; // старые версии (1.16 и ниже) — Java 8
+    }
+    // Новая нумерация Mojang: 26.x/25.x → Java 25, 23.x/24.x → 23, 21.x/22.x → 21
+    if (first >= 25)
+        return 25;
+    if (first >= 23)
+        return 23;
+    if (first >= 21)
+        return 21;
+    return 17;
+}
+
+int requiredJavaMajorFromJson(const QJsonObject &vi, const QString &versionId)
+{
+    const QJsonObject jv = vi.value(QStringLiteral("javaVersion")).toObject();
+    const int major = jv.value(QStringLiteral("majorVersion")).toInt(0);
+    return major > 0 ? major : inferJavaMajor(versionId);
+}
+
+int requiredJavaMajorFromFiles(const QString &dataDir, const QString &versionId)
+{
+    // Сначала launch.json (сохраняется при установке), затем исходный version JSON.
+    const QString launchPath = QDir(dataDir).filePath(
+        QStringLiteral("versions/") + versionId + QStringLiteral("/launch.json"));
+    QJsonObject info = readJsonFile(launchPath, nullptr).object();
+    int major = info.value(QStringLiteral("requiredJavaMajor")).toInt(0);
+    if (major > 0)
+        return major;
+
+    const QString vjPath = QDir(dataDir).filePath(
+        QStringLiteral("versions/") + versionId + QStringLiteral(".json"));
+    const QJsonObject vi = readJsonFile(vjPath, nullptr).object();
+    return requiredJavaMajorFromJson(vi, versionId);
+}
+
+QString jreUrlForMajor(int major)
+{
+    return QStringLiteral(
+               "https://api.adoptium.net/v3/binary/latest/%1/ga/windows/x64/jre/hotspot/normal/eclipse")
+        .arg(major);
+}
+
+QJsonObject mavenLibrary(const QString &maven, const QString &defaultBaseUrl)
+{
+    QJsonObject lib;
+    lib.insert(QStringLiteral("name"), maven);
+    lib.insert(QStringLiteral("url"), defaultBaseUrl);
+    return lib;
+}
+
 QByteArray readAllFile(const QString &path)
 {
     QFile f(path);
@@ -125,7 +194,7 @@ void configureDownloadRequest(QNetworkRequest *request, int timeoutMs)
     request->setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                           QNetworkRequest::NoLessSafeRedirectPolicy);
     request->setHeader(QNetworkRequest::UserAgentHeader,
-                       QStringLiteral("EnderForge/0.3 (Minecraft Launcher)"));
+                       QStringLiteral("EnderForge/0.5 (Minecraft Launcher)"));
     request->setRawHeader("Accept", "*/*");
 }
 
@@ -160,6 +229,8 @@ MinecraftInstaller::MinecraftInstaller(QObject *parent)
 void MinecraftInstaller::stop()
 {
     m_cancelled = true;
+    if (m_activeReply)
+        m_activeReply->abort();
 }
 
 void MinecraftInstaller::setProgress(const QString &stage, int done, int total,
@@ -175,6 +246,11 @@ void MinecraftInstaller::setProgress(const QString &stage, int done, int total,
     p.bytesTotal = all;
     p.currentFile = file;
     onProgress(p);
+}
+
+void MinecraftInstaller::determineJavaMajor()
+{
+    m_requiredJavaMajor = requiredJavaMajorFromJson(m_vi, m_versionId);
 }
 
 // ------------------------------------------------------------------ install
@@ -238,6 +314,7 @@ void MinecraftInstaller::downloadFile(const QUrl &url, const QString &destPath,
     QNetworkRequest request(url);
     configureDownloadRequest(&request, 300000);
     QNetworkReply *reply = m_network->get(request);
+    m_activeReply = reply;
 
     // Пишем тело ответа: потоково (readyRead) + остаток в finished.
     // Иначе QSaveFile коммитит 0 байт.
@@ -261,7 +338,9 @@ void MinecraftInstaller::downloadFile(const QUrl &url, const QString &destPath,
         writeChunk(reply->readAll());
     });
     connect(reply, &QNetworkReply::finished, this,
-            [reply, save, done, expectedSize, writeChunk, head, written]() {
+            [this, reply, save, done, expectedSize, writeChunk, head, written]() {
+        if (m_activeReply == reply)
+            m_activeReply = nullptr;
         writeChunk(reply->readAll());
         reply->deleteLater();
 
@@ -321,6 +400,7 @@ void MinecraftInstaller::downloadVersionJson()
         }
 
         // Наследуемая версия (например, сборки Fabric): берём родительский JSON
+        determineJavaMajor();
         if (!m_vi.contains(QStringLiteral("downloads")) && m_vi.contains(QStringLiteral("inheritsFrom"))) {
             const QString parent = fromJson(m_vi, "inheritsFrom");
             const QString parentUrl = m_urlResolver ? m_urlResolver(parent) : QString();
@@ -350,10 +430,15 @@ void MinecraftInstaller::downloadVersionJson()
                 for (const QJsonValue &v : m_vi.value(QStringLiteral("libraries")).toArray())
                     libs.append(v);
                 parentObj.insert(QStringLiteral("libraries"), libs);
-                // поля ребёнка перекрывают родителя
-                for (auto it = m_vi.constBegin(); it != m_vi.constEnd(); ++it)
+                // Поля ребёнка перекрывают родителя, но НЕ libraries — иначе
+                // родительские библиотеки теряются и запуск падает.
+                for (auto it = m_vi.constBegin(); it != m_vi.constEnd(); ++it) {
+                    if (it.key() == QLatin1String("libraries"))
+                        continue;
                     parentObj.insert(it.key(), it.value());
+                }
                 m_vi = parentObj;
+                determineJavaMajor();
                 downloadClient();
             });
             return;
@@ -628,18 +713,24 @@ void MinecraftInstaller::resolveLoader()
         return;
     }
 
-    // Fabric / Quilt: meta-сервис выдаёт версию загрузчика под версию MC
+    // Fabric / Quilt: meta-сервис выдаёт версию загрузчика и mappings под версию MC.
+    // Сначала получаем рекомендуемую версию загрузчика из списка, затем полные
+    // данные (launcherMeta: mainClass + библиотеки загрузчика) для этой версии.
     const bool isFabric = (m_loader == QLatin1String("fabric"));
+    const QString mavenBase = (isFabric ? QString::fromLatin1(kFabricMavenUrl)
+                                        : QString::fromLatin1(kQuiltMavenUrl));
     const QString metaUrl = (isFabric ? QString::fromLatin1(kFabricMetaUrl)
                                       : QString::fromLatin1(kQuiltMetaUrl)) + m_versionId;
-    const QString metaDest = QDir(m_dataDir).filePath(QStringLiteral("versions/") + m_versionId + QStringLiteral("/loader-meta.json"));
+    const QString metaDest =
+        QDir(m_dataDir).filePath(QStringLiteral("versions/") + m_versionId + QStringLiteral("/loader-meta.json"));
     setProgress(QStringLiteral("загрузчик"), 0, 1, 0, 0,
                 (isFabric ? QStringLiteral("fabric") : QStringLiteral("quilt")));
-    downloadFile(QUrl(metaUrl), metaDest, [this, isFabric, metaDest](bool ok, const QString &err) {
+    downloadFile(QUrl(metaUrl), metaDest, [this, isFabric, mavenBase, metaUrl, metaDest](bool ok, const QString &err) {
         if (!ok) {
             finish(false, QStringLiteral("Не удалось получить данные загрузчика: %1").arg(err));
             return;
         }
+
         QString parseErr;
         const QJsonArray arr = readJsonFile(metaDest, &parseErr).array();
         if (arr.isEmpty()) {
@@ -648,44 +739,165 @@ void MinecraftInstaller::resolveLoader()
                               : QStringLiteral("Не удалось получить данные загрузчика: %1").arg(parseErr));
             return;
         }
+
         const QJsonObject first = arr.first().toObject();
-        const QString loaderVersion = fromJson(first.value(QStringLiteral("loader")).toObject(), "version");
-        m_mainClass = fromJson(first.value(QStringLiteral("launcherMeta")).toObject(), "mainClass");
-        if (m_mainClass.isEmpty())
-            m_mainClass = isFabric
-                ? QStringLiteral("net.fabricmc.loader.impl.launch.knot.KnotClient")
-                : QStringLiteral("org.quiltmc.loader.impl.launch.knot.KnotClient");
+        const QJsonObject loaderObj = first.value(QStringLiteral("loader")).toObject();
+        const QString loaderVersion = fromJson(loaderObj, "version");
         if (loaderVersion.isEmpty()) {
             finish(false, QStringLiteral("Нет версии загрузчика"));
             return;
         }
-        const QString jarPath = isFabric
-            ? QStringLiteral("net/fabricmc/fabric-loader/%1/fabric-loader-%1.jar").arg(loaderVersion)
-            : QStringLiteral("org/quiltmc/quilt-loader/%1/quilt-loader-%1.jar").arg(loaderVersion);
-        const QString jarUrl = (isFabric ? QString::fromLatin1(kFabricMavenUrl)
-                                         : QString::fromLatin1(kQuiltMavenUrl)) + jarPath;
-        m_loaderJar = QDir(m_dataDir).filePath(QStringLiteral("libraries/") + jarPath);
-        setProgress(QStringLiteral("загрузчик"), 0, 1, 0, 0, QFileInfo(m_loaderJar).fileName());
-        downloadFile(QUrl(jarUrl), m_loaderJar, [this](bool ok2, const QString &err2) {
-            if (!ok2) {
-                finish(false, QStringLiteral("Загрузчик: %1").arg(err2));
+
+        // Maven-координаты загрузчика и mapping-слоя (intermediary/hashed).
+        QString loaderMaven = fromJson(loaderObj, "maven");
+        if (loaderMaven.isEmpty())
+            loaderMaven = QString(isFabric ? QStringLiteral("net.fabricmc:fabric-loader:")
+                                           : QStringLiteral("org.quiltmc:quilt-loader:")) + loaderVersion;
+
+        QString mappingMaven;
+        const QString mappingField = isFabric ? QStringLiteral("intermediary") : QStringLiteral("hashed");
+        const QJsonObject mappingObj = first.value(mappingField).toObject();
+        mappingMaven = fromJson(mappingObj, "maven");
+        if (mappingMaven.isEmpty() && !fromJson(mappingObj, "version").isEmpty()) {
+            mappingMaven = QString(isFabric ? QStringLiteral("net.fabricmc:intermediary:")
+                                            : QStringLiteral("org.quiltmc:hashed:"))
+                               + fromJson(mappingObj, "version");
+        }
+
+        // Полные данные загрузчика (mainClass + зависимые библиотеки).
+        const QString detailUrl = metaUrl + QLatin1Char('/') + loaderVersion;
+        const QString detailDest =
+            QDir(m_dataDir).filePath(QStringLiteral("versions/") + m_versionId + QStringLiteral("/loader-details.json"));
+        downloadFile(QUrl(detailUrl), detailDest, [this, isFabric, mavenBase, mappingMaven, loaderMaven,
+                                                   detailDest](bool ok2, const QString &err2) {
+            // Фолбэк: даже если подробные данные недоступны, ставим
+            // загрузчик + mapping и пробуем запуск (mainClass берём по умолчанию).
+            QJsonObject detail;
+            if (ok2) {
+                QJsonDocument doc = readJsonFile(detailDest, nullptr);
+                if (!doc.isNull() && doc.isObject())
+                    detail = doc.object();
+                else if (!doc.isNull() && doc.isArray())
+                    detail = doc.array().first().toObject();
+            }
+
+            const QJsonObject launcherMeta = detail.value(QStringLiteral("launcherMeta")).toObject();
+            m_mainClass = fromJson(launcherMeta.value(QStringLiteral("mainClass")).toObject(), "client");
+            if (m_mainClass.isEmpty())
+                m_mainClass = isFabric
+                    ? QStringLiteral("net.fabricmc.loader.impl.launch.knot.KnotClient")
+                    : QStringLiteral("org.quiltmc.loader.launch.knot.KnotClient");
+
+            // Собираем все библиотеки загрузчика в version JSON, чтобы при
+            // запуске они попали в classpath.
+            QJsonArray libs = m_vi.value(QStringLiteral("libraries")).toArray();
+            m_fileTasks.clear();
+            m_taskIndex = 0;
+
+            const auto addMavenLibrary = [&](const QString &maven, const QString &baseUrl) {
+                const QString path = mavenPathFromName(maven, QString());
+                if (path.isEmpty())
+                    return;
+                libs.append(mavenLibrary(maven, baseUrl));
+                const QString dest = QDir(m_dataDir).filePath(QStringLiteral("libraries/") + path);
+                m_libraryJars.append(dest);
+                m_fileTasks.append({ baseUrl + QLatin1Char('/') + path, dest, 0 });
+            };
+
+            if (!mappingMaven.isEmpty())
+                addMavenLibrary(mappingMaven, mavenBase);
+
+            const QJsonObject loaderLibraries =
+                launcherMeta.value(QStringLiteral("libraries")).toObject();
+            const auto addMetaLibraries = [&](const QString &key) {
+                for (const QJsonValue &v : loaderLibraries.value(key).toArray()) {
+                    const QJsonObject lib = v.toObject();
+                    const QString name = fromJson(lib, "name");
+                    if (name.isEmpty())
+                        continue;
+                    const QString base = fromJson(lib, "url").isEmpty() ? mavenBase : fromJson(lib, "url");
+                    const QString path = mavenPathFromName(name, QString());
+                    if (path.isEmpty())
+                        continue;
+                    libs.append(lib);
+                    const QString dest = QDir(m_dataDir).filePath(QStringLiteral("libraries/") + path);
+                    m_libraryJars.append(dest);
+                    m_fileTasks.append({ base + QLatin1Char('/') + path, dest, 0 });
+                }
+            };
+            addMetaLibraries(QStringLiteral("common"));
+            addMetaLibraries(QStringLiteral("client"));
+
+            m_vi.insert(QStringLiteral("libraries"), libs);
+
+            const QString loaderPath = mavenPathFromName(loaderMaven, QString());
+            if (loaderPath.isEmpty()) {
+                finish(false, QStringLiteral("Не удалось определить jar загрузчика"));
                 return;
             }
-            finish(true, QString());
+            m_loaderJar = QDir(m_dataDir).filePath(QStringLiteral("libraries/") + loaderPath);
+            const QString loaderUrl = mavenBase + QLatin1Char('/') + loaderPath;
+            setProgress(QStringLiteral("загрузчик"), 0, 1, 0, 0, QFileInfo(m_loaderJar).fileName());
+            downloadFile(QUrl(loaderUrl), m_loaderJar, [this](bool ok3, const QString &err3) {
+                if (!ok3) {
+                    finish(false, QStringLiteral("Загрузчик: %1").arg(err3));
+                    return;
+                }
+                downloadLoaderLibraries();
+            });
         });
     });
+}
+
+void MinecraftInstaller::downloadLoaderLibraries()
+{
+    if (m_cancelled)
+        return;
+    m_currentStage = QStringLiteral("загрузчик");
+    m_currentTotal = m_fileTasks.size();
+    downloadNextLoaderLibrary();
+}
+
+void MinecraftInstaller::downloadNextLoaderLibrary()
+{
+    if (m_cancelled || m_taskIndex >= m_fileTasks.size()) {
+        finish(true, QString());
+        return;
+    }
+    const FileTask t = m_fileTasks.at(m_taskIndex);
+    m_currentDone = m_taskIndex;
+    setProgress(m_currentStage, m_taskIndex, m_fileTasks.size(), 0, 0,
+                QFileInfo(t.dest).fileName());
+    downloadFile(QUrl(t.url), t.dest, [this](bool ok, const QString &err) {
+        if (!ok) {
+            finish(false, QStringLiteral("Библиотека загрузчика: %1").arg(err));
+            return;
+        }
+        ++m_taskIndex;
+        downloadNextLoaderLibrary();
+    }, t.expectedSize);
 }
 
 void MinecraftInstaller::finish(bool ok, const QString &err)
 {
     m_busy = false;
     if (ok) {
-        // Сохраняем информацию для запуска
+        // Сохраняем объединённый version JSON (родитель + загрузчик), чтобы
+        // buildClasspath видел все библиотеки. Также пишем launch.json.
+        const QString vjPath =
+            QDir(m_dataDir).filePath(QStringLiteral("versions/") + m_versionId + QStringLiteral(".json"));
+        if (!m_vi.isEmpty()) {
+            QFile vj(vjPath);
+            if (vj.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                vj.write(QJsonDocument(m_vi).toJson(QJsonDocument::Indented));
+        }
+
         QJsonObject info;
         info.insert(QStringLiteral("mainClass"), m_mainClass);
         info.insert(QStringLiteral("loaderJar"), m_loaderJar);
         info.insert(QStringLiteral("assetIndex"), m_assetIndexId);
         info.insert(QStringLiteral("clientJar"), m_clientJar);
+        info.insert(QStringLiteral("requiredJavaMajor"), m_requiredJavaMajor);
         const QString infoPath =
             QDir(m_dataDir).filePath(QStringLiteral("versions/") + m_versionId + QStringLiteral("/launch.json"));
         QDir().mkpath(QFileInfo(infoPath).absolutePath());
@@ -717,15 +929,25 @@ QString MinecraftInstaller::javaMajorVersion(const QString &javaExe)
     return QString::number(major);
 }
 
-QString MinecraftInstaller::findJava()
+QString MinecraftInstaller::findJava(int requiredMajor)
 {
-    // Кэш предыдущего поиска (если мы сами скачали JRE)
+    // Кэш предыдущего поиска (если мы сами скачали JRE). Проверяем версию —
+    // кэш предыдущей Major-версии не должен использоваться для другой игры.
+    const auto usableFor = [&](const QString &p) {
+        if (p.isEmpty() || !QFileInfo::exists(p))
+            return false;
+        const int major = javaMajorVersion(p).toInt();
+        if (major <= 0)
+            return false;
+        return requiredMajor <= 0 || major >= requiredMajor;
+    };
+
     const QString cachedPath = QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
                                    .filePath(QStringLiteral("runtime/java-path.txt"));
     QFile cf(cachedPath);
     if (cf.open(QIODevice::ReadOnly)) {
         const QString p = QString::fromUtf8(cf.readAll()).trimmed();
-        if (!p.isEmpty() && QFileInfo::exists(p))
+        if (usableFor(p))
             return p;
     }
 
@@ -779,14 +1001,24 @@ QString MinecraftInstaller::findJava()
         }
     }
 
-    // Выбираем Java с максимальной версией, предпочитая >= 17
+    // Выбираем подходящую Java. Если требуется конкретный мажор — точное
+    // совпадение, иначе ближайшая версия не ниже требуемой.
     QString best;
     int bestMajor = -1;
     for (const QString &c : candidates) {
         const int major = javaMajorVersion(c).toInt();
         if (major <= 0)
             continue;
-        if (major > bestMajor || (major >= 17 && bestMajor < 17)) {
+        if (requiredMajor > 0) {
+            if (major < requiredMajor)
+                continue;
+            if (major == requiredMajor)
+                return c;
+            if (bestMajor < 0 || major < bestMajor) {
+                best = c;
+                bestMajor = major;
+            }
+        } else if (major > bestMajor) {
             best = c;
             bestMajor = major;
         }
@@ -794,14 +1026,15 @@ QString MinecraftInstaller::findJava()
     return best;
 }
 
-void MinecraftInstaller::downloadJre(const QString &dataDir,
+void MinecraftInstaller::downloadJre(const QString &dataDir, int major,
                                      const std::function<void(bool, const QString &)> &done)
 {
     const QString runtimeDir = QDir(dataDir).filePath(QStringLiteral("runtime"));
     QDir().mkpath(runtimeDir);
-    const QString zipPath = QDir(runtimeDir).filePath(QStringLiteral("jre17.zip"));
-    setProgress(QStringLiteral("java"), 0, 1, 0, 0, QStringLiteral("jre17.zip"));
-    downloadFile(QUrl(QString::fromLatin1(kJreUrl)), zipPath, [this, runtimeDir, zipPath, done](bool ok, const QString &err) {
+    const QString zipName = QStringLiteral("jre%1.zip").arg(major);
+    const QString zipPath = QDir(runtimeDir).filePath(zipName);
+    setProgress(QStringLiteral("java"), 0, 1, 0, 0, zipName);
+    downloadFile(QUrl(jreUrlForMajor(major)), zipPath, [this, runtimeDir, zipPath, done](bool ok, const QString &err) {
         if (!ok) {
             done(false, QStringLiteral("Не удалось скачать Java: %1").arg(err));
             return;
@@ -852,16 +1085,17 @@ void MinecraftInstaller::extractZipWithTar(const QString &zipPath, const QString
     p->start();
 }
 
-void MinecraftInstaller::ensureJava(const QString &dataDir,
+void MinecraftInstaller::ensureJava(const QString &versionId, const QString &dataDir,
                                     const std::function<void(bool, const QString &)> &done)
 {
-    const QString found = findJava();
+    const int required = requiredJavaMajorFromFiles(dataDir, versionId);
+    const QString found = findJava(required);
     if (!found.isEmpty()) {
         m_javaPath = found;
         done(true, QString());
         return;
     }
-    downloadJre(dataDir, done);
+    downloadJre(dataDir, required, done);
 }
 
 // ------------------------------------------------------------------ launch
@@ -882,6 +1116,9 @@ bool MinecraftInstaller::loadLaunchInfo(const QString &versionId, const QString 
         m_clientJar = QDir(dataDir).filePath(QStringLiteral("versions/") + versionId + QLatin1Char('/') + versionId + QStringLiteral(".jar"));
     m_assetsRoot = QDir(dataDir).filePath(QStringLiteral("assets"));
     m_nativesDir = QDir(dataDir).filePath(QStringLiteral("versions/") + versionId + QStringLiteral("/natives"));
+    m_requiredJavaMajor = info.value(QStringLiteral("requiredJavaMajor")).toInt(0);
+    if (m_requiredJavaMajor <= 0)
+        m_requiredJavaMajor = requiredJavaMajorFromFiles(dataDir, versionId);
     return !m_mainClass.isEmpty() && QFileInfo::exists(m_clientJar);
 }
 
@@ -922,14 +1159,14 @@ bool MinecraftInstaller::buildClasspath(const QString &versionId, const QString 
 bool MinecraftInstaller::startProcess()
 {
     if (!QFileInfo::exists(m_javaPath))
-        m_javaPath = findJava();
+        m_javaPath = findJava(m_requiredJavaMajor);
     if (m_javaPath.isEmpty())
         return false;
 
     QStringList args;
     args << QStringLiteral("-Xmx2G") << QStringLiteral("-Xms512M");
     args << QStringLiteral("-Djava.library.path=%1").arg(m_nativesDir);
-    args << QStringLiteral("-cp") << m_classpath.join(QLatin1Char(';'));
+    args << QStringLiteral("-cp") << m_classpath.join(QDir::listSeparator());
     args << m_mainClass;
     args << QStringLiteral("--username") << QStringLiteral("Player")
          << QStringLiteral("--version") << m_versionId
@@ -964,7 +1201,7 @@ bool MinecraftInstaller::launchGame(const QString &versionId, const QString &dat
     m_gameDir = gameDir;
 
     if (m_javaPath.isEmpty())
-        m_javaPath = findJava();
+        m_javaPath = findJava(m_requiredJavaMajor);
     if (m_javaPath.isEmpty())
         return false;
 
