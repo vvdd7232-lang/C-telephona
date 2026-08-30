@@ -13,6 +13,8 @@
 #include <QMessageLogContext>
 #include <QNetworkProxy>
 #include <QStandardPaths>
+#include <QStyle>
+#include <QStyleFactory>
 #include <QTextStream>
 #include <QTimer>
 
@@ -103,6 +105,15 @@ int main(int argc, char *argv[])
     stage(QStringLiteral("before QApplication"));
     QApplication app(argc, argv);
     stage(QStringLiteral("after QApplication"));
+
+    // Используем встроенный стиль Fusion вместо нативного Windows-стиля.
+    // В кастомной кросс-сборке Qt плагин qmodernwindowsstyle.dll может вызывать
+    // сбой при создании первой QPushButton/стилизации (в логе: после
+    // MW::topbar.settings_created окно закрывается). Fusion — встроен в Qt6,
+    // не зависит от внешнего плагина и работает стабильно.
+    if (QStyle *fusion = QStyleFactory::create(QStringLiteral("Fusion")))
+        QApplication::setStyle(fusion);
+    stage(QStringLiteral("after style"));
 
     QNetworkProxyFactory::setUseSystemConfiguration(false);
     QNetworkProxy::setApplicationProxy(QNetworkProxy::NoProxy);

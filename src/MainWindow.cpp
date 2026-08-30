@@ -297,8 +297,11 @@ void MainWindow::buildTopBar()
     settingsBtn->setToolTip(QStringLiteral("Настройки"));
     settingsBtn->setFixedSize(38, 38);
     qInfo("MW::topbar.settings_created");
+    qInfo("MW::topbar.connect");
     connect(settingsBtn, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
+    qInfo("MW::topbar.connected");
     layout->addWidget(settingsBtn);
+    qInfo("MW::topbar.added");
     qInfo("MW::topbar.end");
 }
 
