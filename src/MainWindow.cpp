@@ -55,21 +55,23 @@ QPixmap statusDot(const QColor &color)
 MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     : QMainWindow(parent)
 {
+    qInfo("MW::begin");
     setWindowTitle(QStringLiteral("EnderForge — Minecraft Launcher"));
     setMinimumSize(920, 560);
     resize(1000, 650);
 
     m_central = new QWidget(this);
     setCentralWidget(m_central);
+    qInfo("MW::central");
 
     auto *root = new QVBoxLayout(m_central);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    buildTopBar();
-    buildSidebar();
-    buildLaunchPanel();
-    buildStatusBar();
+    buildTopBar();      qInfo("MW::topbar");
+    buildSidebar();     qInfo("MW::sidebar");
+    buildLaunchPanel(); qInfo("MW::launch");
+    buildStatusBar();   qInfo("MW::status");
 
     // Тело окна: сайдбар слева + панель запуска
     auto *body = new QWidget(m_central);
@@ -82,6 +84,7 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     root->addWidget(m_topBar);
     root->addWidget(body, 1);
     root->addWidget(m_statusBar);
+    qInfo("MW::body");
 
     // Тост-уведомление (поверх всего)
     m_toast = new QLabel(this);
@@ -95,26 +98,30 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     connect(m_toastTimer, &QTimer::timeout, m_toast, &QLabel::hide);
 
     // Иконка окна — травяной блок
-    setWindowIcon(QIcon(grassBlockPixmap(6)));
+    setWindowIcon(QIcon(grassBlockPixmap(6))); qInfo("MW::icon");
 
     // Каталог данных
     QString dir = dataDir;
     if (dir.isEmpty()) {
         dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     }
+    qInfo("MW::datadir");
     m_store = new ProfileStore(dir, this);
     m_store->load();
+    qInfo("MW::store");
 
-    refreshProfileList();
+    refreshProfileList(); qInfo("MW::profiles");
     // Выбираем первый профиль, если он есть
     if (!m_store->profiles().isEmpty())
         selectProfile(m_store->profiles().first().name);
+    qInfo("MW::selected");
 
     // VersionManager и MinecraftInstaller создаём ЧЕРЕЗ МГНОВЕНИЕ после
     // показа окна: их конструкторы создают QNetworkAccessManager, который
     // на Windows может блокироваться (WPAD/DNS/TLS). Даём Qt отрисовать окно,
     // а только потом создаём сетевой бэкенд.
     QTimer::singleShot(300, this, &MainWindow::initializeBackend);
+    qInfo("MW::end");
 }
 
 void MainWindow::initializeBackend()
