@@ -100,7 +100,7 @@ AddProfileDialog::AddProfileDialog(VersionManager *versions, QWidget *parent)
     auto *cancelBtn = new QPushButton(QStringLiteral("Отмена"), this);
     cancelBtn->setObjectName(QStringLiteral("cancelButton"));
     cancelBtn->setCursor(Qt::PointingHandCursor);
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+    connect(cancelBtn, &QPushButton::clicked, this, [this]() { reject(); });
     layout->addWidget(cancelBtn, 0, Qt::AlignHCenter);
 }
 

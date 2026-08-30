@@ -70,7 +70,7 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     // конструкторе до show() вызывает зависание. Конструктор возвращается
     // мгновенно, main() сразу вызывает show(), окно появляется, а весь UI
     // строим следующей итерацией event loop (якобы после show()).
-    QTimer::singleShot(0, this, &MainWindow::buildUi);
+    QTimer::singleShot(0, this, [this]() { buildUi(); });
     qInfo("MW::end");
 }
 
@@ -111,7 +111,7 @@ void MainWindow::buildUi()
     m_toastTimer = new QTimer(this);
     m_toastTimer->setSingleShot(true);
     m_toastTimer->setInterval(2600);
-    connect(m_toastTimer, &QTimer::timeout, m_toast, &QLabel::hide);
+    connect(m_toastTimer, &QTimer::timeout, this, [this]() { m_toast->hide(); });
 
     // Иконка окна — травяной блок
     setWindowIcon(QIcon(grassBlockPixmap(6))); qInfo("MW::icon");
@@ -136,7 +136,7 @@ void MainWindow::buildUi()
     // показа окна: их конструкторы создают QNetworkAccessManager, который
     // на Windows может блокироваться (WPAD/DNS/TLS). Даём Qt отрисовать окно,
     // а только потом создаём сетевой бэкенд.
-    QTimer::singleShot(300, this, &MainWindow::initializeBackend);
+    QTimer::singleShot(300, this, [this]() { initializeBackend(); });
     qInfo("MW::ui.end");
 }
 
@@ -298,7 +298,7 @@ void MainWindow::buildTopBar()
     settingsBtn->setFixedSize(38, 38);
     qInfo("MW::topbar.settings_created");
     qInfo("MW::topbar.connect");
-    connect(settingsBtn, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
+    connect(settingsBtn, &QPushButton::clicked, this, [this]() { onSettingsClicked(); });
     qInfo("MW::topbar.connected");
     layout->addWidget(settingsBtn);
     qInfo("MW::topbar.added");
@@ -345,13 +345,14 @@ void MainWindow::buildSidebar()
     m_addProfileButton = new QPushButton(QStringLiteral("＋  Добавить профиль"), m_sidebar);
     m_addProfileButton->setObjectName(QStringLiteral("addProfileButton"));
     m_addProfileButton->setCursor(Qt::PointingHandCursor);
-    connect(m_addProfileButton, &QPushButton::clicked, this, &MainWindow::onAddProfileClicked);
+    connect(m_addProfileButton, &QPushButton::clicked, this,
+            [this]() { onAddProfileClicked(); });
 
     m_profileList = new QListWidget(m_sidebar);
     m_profileList->setObjectName(QStringLiteral("profileList"));
     m_profileList->setMinimumHeight(180);
     connect(m_profileList, &QListWidget::itemClicked, this,
-            &MainWindow::onProfileListClicked);
+            [this]() { onProfileListClicked(); });
 
     auto *profilesBox = new QWidget;
     auto *profilesLayout = new QVBoxLayout(profilesBox);
@@ -427,7 +428,8 @@ void MainWindow::buildLaunchPanel()
     m_launchButton->setObjectName(QStringLiteral("launchButton"));
     m_launchButton->setFixedHeight(56);
     m_launchButton->setCursor(Qt::PointingHandCursor);
-    connect(m_launchButton, &QPushButton::clicked, this, &MainWindow::onLaunchClicked);
+    connect(m_launchButton, &QPushButton::clicked, this,
+            [this]() { onLaunchClicked(); });
     layout->addWidget(m_launchButton);
 
     m_hintLabel = new QLabel(QStringLiteral("Загрузка списка версий…"), m_launchPanel);
