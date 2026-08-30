@@ -151,16 +151,24 @@ int main(int argc, char *argv[])
     if (dataDir.isEmpty())
         dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 
-    // Пиксельный шрифт для заголовков
-    const QString fontPath = findResourcePath(QStringLiteral("resources/fonts/PressStart2P-Regular.ttf"));
-    if (!fontPath.isEmpty())
-        QFontDatabase::addApplicationFont(fontPath);
+    // Внимание: кастомная тема/шрифт (resources/theme.qss + Press Start 2P)
+    // отключены для Windows-запуска. На части машин применение этих ресурсов
+    // до показа окна вызывает зависание внутри построения интерфейса
+    // (см. лог: MW::begin -> MW::central -> стоп в buildTopBar). Окно строится
+    // и работает со стандартным стилем Qt; тема не критична для запуска.
+    // Если понадобится — включить можно переменной окружения:
+    //   set ENDERFORGE_USE_THEME=1
+    if (qEnvironmentVariableIsSet("ENDERFORGE_USE_THEME")) {
+        const QString fontPath = findResourcePath(QStringLiteral("resources/fonts/PressStart2P-Regular.ttf"));
+        if (!fontPath.isEmpty())
+            QFontDatabase::addApplicationFont(fontPath);
 
-    // Тема
-    const QString qssPath = findResourcePath(QStringLiteral("resources/theme.qss"));
-    const QString qss = loadTextFile(qssPath);
-    if (!qss.isEmpty())
-        app.setStyleSheet(qss);
+        const QString qssPath = findResourcePath(QStringLiteral("resources/theme.qss"));
+        const QString qss = loadTextFile(qssPath);
+        if (!qss.isEmpty())
+            app.setStyleSheet(qss);
+    }
+    stage(QStringLiteral("after resources"));
 
     // --- Режим проверки скачивания (без окна) ---
     if (!downloadTestUrl.isEmpty()) {

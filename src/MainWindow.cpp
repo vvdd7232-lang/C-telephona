@@ -246,9 +246,11 @@ void MainWindow::buildTopBar()
     layout->setContentsMargins(18, 0, 18, 0);
     layout->setSpacing(12);
 
+    qInfo("MW::topbar.begin");
     auto *logo = new QLabel(m_topBar);
     logo->setPixmap(grassBlockPixmap(5));
     layout->addWidget(logo);
+    qInfo("MW::topbar.logo");
 
     auto *brandBox = new QVBoxLayout;
     brandBox->setSpacing(2);
@@ -272,6 +274,7 @@ void MainWindow::buildTopBar()
     settingsBtn->setFixedSize(38, 38);
     connect(settingsBtn, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
     layout->addWidget(settingsBtn);
+    qInfo("MW::topbar.end");
 }
 
 // ---------- Боковая панель ----------
