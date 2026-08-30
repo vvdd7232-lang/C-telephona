@@ -45,6 +45,7 @@ protected:
 
 private:
     // Построение интерфейса
+    void buildUi();
     void buildTopBar();
     void buildSidebar();
     void buildLaunchPanel();
@@ -103,6 +104,7 @@ private:
     ProfileStore *m_store = nullptr;
     MinecraftInstaller *m_installer = nullptr;
 
+    QString m_dataDir;
     QString m_selectedProfile;
     bool m_manualRefresh = false;
     bool m_launchAfterInstall = false;  // запустить игру после установки

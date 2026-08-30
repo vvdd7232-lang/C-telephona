@@ -56,6 +56,7 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     : QMainWindow(parent)
 {
     qInfo("MW::begin");
+    m_dataDir = dataDir;
     setWindowTitle(QStringLiteral("EnderForge — Minecraft Launcher"));
     setMinimumSize(920, 560);
     resize(1000, 650);
@@ -64,9 +65,23 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     setCentralWidget(m_central);
     qInfo("MW::central");
 
+    // ВАЖНО: здесь НЕ строим интерфейс и не читаем данные. На части Windows-машин
+    // (и с этим Qt-билдом) создание текстовых виджетов/лейаутов прямо в
+    // конструкторе до show() вызывает зависание. Конструктор возвращается
+    // мгновенно, main() сразу вызывает show(), окно появляется, а весь UI
+    // строим следующей итерацией event loop (якобы после show()).
+    QTimer::singleShot(0, this, &MainWindow::buildUi);
+    qInfo("MW::end");
+}
+
+void MainWindow::buildUi()
+{
+    qInfo("MW::ui.begin");
+
     auto *root = new QVBoxLayout(m_central);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
+    qInfo("MW::ui.root");
 
     buildTopBar();      qInfo("MW::topbar");
     buildSidebar();     qInfo("MW::sidebar");
@@ -91,6 +106,7 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     m_toast->setObjectName(QStringLiteral("toast"));
     m_toast->setAlignment(Qt::AlignCenter);
     m_toast->hide();
+    qInfo("MW::toast");
 
     m_toastTimer = new QTimer(this);
     m_toastTimer->setSingleShot(true);
@@ -101,7 +117,7 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     setWindowIcon(QIcon(grassBlockPixmap(6))); qInfo("MW::icon");
 
     // Каталог данных
-    QString dir = dataDir;
+    QString dir = m_dataDir;
     if (dir.isEmpty()) {
         dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     }
@@ -121,7 +137,7 @@ MainWindow::MainWindow(const QString &dataDir, QWidget *parent)
     // на Windows может блокироваться (WPAD/DNS/TLS). Даём Qt отрисовать окно,
     // а только потом создаём сетевой бэкенд.
     QTimer::singleShot(300, this, &MainWindow::initializeBackend);
-    qInfo("MW::end");
+    qInfo("MW::ui.end");
 }
 
 void MainWindow::initializeBackend()
@@ -247,6 +263,7 @@ void MainWindow::buildTopBar()
     layout->setSpacing(12);
 
     qInfo("MW::topbar.begin");
+
     auto *logo = new QLabel(m_topBar);
     logo->setPixmap(grassBlockPixmap(5));
     layout->addWidget(logo);
@@ -254,24 +271,32 @@ void MainWindow::buildTopBar()
 
     auto *brandBox = new QVBoxLayout;
     brandBox->setSpacing(2);
+    qInfo("MW::topbar.brandbox");
+
     auto *brandName = new QLabel(QStringLiteral("ENDERFORGE"), m_topBar);
     brandName->setObjectName(QStringLiteral("brandName"));
     brandBox->addWidget(brandName);
+    qInfo("MW::topbar.brandname");
+
     auto *brandTagline = new QLabel(QStringLiteral("MINECRAFT LAUNCHER"), m_topBar);
     brandTagline->setObjectName(QStringLiteral("brandTagline"));
     brandBox->addWidget(brandTagline);
-    layout->addLayout(brandBox);
+    qInfo("MW::topbar.tagline");
 
+    layout->addLayout(brandBox);
     layout->addStretch(1);
+    qInfo("MW::topbar.layout");
 
     auto *versionBadge = new QLabel(QStringLiteral("v0.5.0"), m_topBar);
     versionBadge->setObjectName(QStringLiteral("versionBadge"));
     layout->addWidget(versionBadge);
+    qInfo("MW::topbar.version");
 
     auto *settingsBtn = new QPushButton(QStringLiteral("\u2699"), m_topBar);
     settingsBtn->setObjectName(QStringLiteral("settingsButton"));
     settingsBtn->setToolTip(QStringLiteral("Настройки"));
     settingsBtn->setFixedSize(38, 38);
+    qInfo("MW::topbar.settings_created");
     connect(settingsBtn, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
     layout->addWidget(settingsBtn);
     qInfo("MW::topbar.end");
